@@ -108,7 +108,14 @@ The plugin source is in `plugins/visual-intent`. It contributes:
 - a project-session skill that verifies the exact Git root;
 - MCP tools for session, task, batch, claim, and completion status.
 
-Codex asks the user to trust a new hook before it can run; review it in `/hooks`. Plugin changes are picked up by a new Codex chat after installation. The CLI `attach` command above remains the immediate, plugin-independent path.
+Install the repository marketplace and the plugin:
+
+```bash
+codex plugin marketplace add PRODactionPRO/visual-intent --ref main
+codex plugin add visual-intent@personal
+```
+
+Start the Visual Intent proxy for the target repository before opening a new Codex chat in that repository. Codex asks the user to trust a new hook before it can run; open `/hooks`, review `node "$PLUGIN_ROOT/scripts/register-session.mjs"`, and trust that exact definition. Plugin changes are picked up by a new Codex chat after installation. The CLI `attach` command above remains the immediate, plugin-independent path.
 
 ## Connect another coding agent through MCP
 

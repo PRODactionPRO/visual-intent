@@ -97,11 +97,17 @@ export const IntentSchema = z.object({
 export const TaskStatusSchema = z.enum([
   "draft",
   "ready",
+  "queued",
   "in_progress",
   "needs_input",
   "applied",
   "rejected",
 ]);
+
+export const RepositorySchema = z.object({
+  root: z.string().min(1),
+  name: z.string().min(1),
+});
 
 export const TaskResultSchema = z.object({
   summary: z.string().min(1),
@@ -123,21 +129,109 @@ export const CreateTaskSchema = z.object({
 export const TaskSchema = CreateTaskSchema.extend({
   id,
   status: TaskStatusSchema,
+  repository: RepositorySchema.optional(),
+  batchId: id.optional(),
   revision: z.number().int().positive(),
   createdAt: timestamp,
   updatedAt: timestamp,
   result: TaskResultSchema.optional(),
 });
 
+export const ExecutorKindSchema = z.enum(["disconnected", "codex"]);
+
+export const ExecutorStatusSchema = z.enum([
+  "disconnected",
+  "connected",
+  "busy",
+  "needs_input",
+  "error",
+]);
+
+export const ProjectExecutorSchema = z.object({
+  kind: ExecutorKindSchema,
+  status: ExecutorStatusSchema,
+  threadId: id.optional(),
+  source: z.enum(["cli", "plugin", "generated"]).optional(),
+  attachedAt: timestamp.optional(),
+  lastError: z.string().min(1).optional(),
+});
+
+export const ProjectSessionSchema = z.object({
+  id,
+  projectKey: z.string().min(1),
+  displayName: z.string().min(1),
+  repository: RepositorySchema,
+  targetUrl: z.url(),
+  proxyUrl: z.url(),
+  executor: ProjectExecutorSchema,
+  createdAt: timestamp,
+  updatedAt: timestamp,
+});
+
+export const ConfigureProjectSessionSchema = z.object({
+  projectKey: z.string().min(1),
+  displayName: z.string().min(1),
+  repository: RepositorySchema,
+  targetUrl: z.url(),
+  proxyUrl: z.url(),
+  executor: ProjectExecutorSchema.optional(),
+});
+
+export const AttachExecutorSchema = z.object({
+  repositoryRoot: z.string().min(1),
+  threadId: id,
+  source: z.enum(["cli", "plugin", "generated"]).default("plugin"),
+});
+
+export const BatchStatusSchema = z.enum([
+  "waiting_for_executor",
+  "queued",
+  "in_progress",
+  "needs_input",
+  "completed",
+  "failed",
+]);
+
+export const BatchResultSchema = z.object({
+  summary: z.string().min(1),
+  changedFiles: z.array(z.string()).default([]),
+  notes: z.array(z.string()).default([]),
+});
+
+export const ApplyBatchSchema = z.object({
+  id,
+  sessionId: id,
+  taskIds: z.array(id).min(1),
+  status: BatchStatusSchema,
+  executorThreadId: id.optional(),
+  createdAt: timestamp,
+  updatedAt: timestamp,
+  startedAt: timestamp.optional(),
+  completedAt: timestamp.optional(),
+  result: BatchResultSchema.optional(),
+});
+
+export const FinishBatchSchema = z.object({
+  status: z.enum(["completed", "needs_input", "failed"]),
+  result: BatchResultSchema,
+});
+
 export const UpdateTaskSchema = z
   .object({
     expectedRevision: z.number().int().positive().optional(),
+    instruction: z.string().trim().min(1).optional(),
     status: TaskStatusSchema.optional(),
     result: TaskResultSchema.optional(),
   })
-  .refine((value) => value.status !== undefined || value.result !== undefined, {
-    message: "At least one task field must be updated",
-  });
+  .refine(
+    (value) =>
+      value.instruction !== undefined ||
+      value.status !== undefined ||
+      value.result !== undefined,
+    {
+      message: "At least one task field must be updated",
+    },
+  );
 
 export type Platform = z.infer<typeof PlatformSchema>;
 export type Surface = z.infer<typeof SurfaceSchema>;
@@ -148,7 +242,20 @@ export type Relation = z.infer<typeof RelationSchema>;
 export type Annotation = z.infer<typeof AnnotationSchema>;
 export type Intent = z.infer<typeof IntentSchema>;
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
+export type Repository = z.infer<typeof RepositorySchema>;
 export type TaskResult = z.infer<typeof TaskResultSchema>;
 export type CreateTask = z.infer<typeof CreateTaskSchema>;
 export type Task = z.infer<typeof TaskSchema>;
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
+export type ExecutorKind = z.infer<typeof ExecutorKindSchema>;
+export type ExecutorStatus = z.infer<typeof ExecutorStatusSchema>;
+export type ProjectExecutor = z.infer<typeof ProjectExecutorSchema>;
+export type ProjectSession = z.infer<typeof ProjectSessionSchema>;
+export type ConfigureProjectSession = z.infer<
+  typeof ConfigureProjectSessionSchema
+>;
+export type AttachExecutor = z.infer<typeof AttachExecutorSchema>;
+export type BatchStatus = z.infer<typeof BatchStatusSchema>;
+export type BatchResult = z.infer<typeof BatchResultSchema>;
+export type ApplyBatch = z.infer<typeof ApplyBatchSchema>;
+export type FinishBatch = z.infer<typeof FinishBatchSchema>;

@@ -15,7 +15,7 @@ The first user is a developer or product manager working locally on their own pr
 1. **Local first.** The first useful loop runs on one machine without an account or cloud dependency.
 2. **Web first, platform neutral.** Prove the workflow with the browser while keeping protocol entities independent of DOM, React, SwiftUI, or Compose.
 3. **Intent before automation.** Capturing a clear target, region, comment, and expected result matters before autonomous code changes.
-4. **Human-controlled application.** Saving a task does not authorize a coding agent to edit or publish code.
+4. **Human-controlled application.** Saving a task only builds the review queue. The explicit Apply action hands the queue to an agent, but never authorizes publishing code.
 5. **Adapters instead of forks.** Platforms, trackers, storage engines, and agents implement stable ports.
 6. **Open contracts.** The local core, protocol, SDK, and basic adapters are intended to be open source.
 
@@ -29,23 +29,31 @@ running localhost app
   -> injected overlay
   -> selected DOM node or drawn viewport region
   -> local structured task
-  -> HTTP/MCP consumer
+  -> explicit Apply batch
+  -> repository-bound Codex project chat or MCP consumer
   -> task status and result
 ```
 
 The overlay exposes the requested controls:
 
-- **Select** captures an element, selector, visible text, selected semantic attributes, and its viewport rectangle.
+- **Select** captures an element, selector, visible text, selected semantic attributes, and its viewport rectangle, then opens a contextual composer beside it.
 - **Draw** captures an arbitrary viewport rectangle.
-- **Comment** focuses the instruction composer.
-- **Tasks** shows the local queue and current status.
-- **Apply** validates and stores the task locally. It does not edit source code automatically.
+- **Comment** reopens the composer for the current target.
+- **Add task** validates and stores one comment in the editable `ready` queue.
+- **Tasks** shows that queue and supports opening, editing, and deleting items.
+- **Apply** atomically creates a durable batch. A connected project chat receives it; otherwise it waits visibly without losing the comments.
+
+The chat running and improving Visual Intent is deliberately separate from chats that implement feedback in proxied products. Each local proxy stores one canonical repository root. A Codex chat must attach with that same root before it can receive Apply work. This lets the browser be Chrome, the Codex in-app browser, or another local browser without changing routing.
 
 ## MVP success criteria
 
 - A new contributor can install and open the included demo using the README alone.
 - The overlay works through the proxy without adding an SDK to the target project.
 - A task survives daemon restart in a readable JSON file.
+- Every captured task is stamped with the repository selected by the local daemon, not a browser-provided path.
+- Apply work can run only in the Codex thread attached to that exact repository.
+- Existing uncommitted changes stop automatic execution by default.
+- A disconnected or failed executor leaves a durable, visible batch instead of clearing history.
 - HTTP and MCP clients receive the same protocol shape.
 - A task update cannot silently overwrite a newer revision.
 - Lint, type checks, tests, and production builds pass in CI.
@@ -55,7 +63,7 @@ The overlay exposes the requested controls:
 - cloud backend or hosted review links;
 - accounts, authentication, permissions, or organizations;
 - multi-user collaboration and conflict-free live editing;
-- automatic source-code mutation or Git operations;
+- source-code mutation before explicit Apply, automatic commit/push/deploy, or destructive Git operations;
 - screenshots, video, asset uploads, or object storage;
 - production browser extension distribution;
 - Jira, Yandex Tracker, Notion, Slack, or webhook delivery;

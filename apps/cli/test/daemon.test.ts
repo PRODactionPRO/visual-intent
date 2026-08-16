@@ -25,6 +25,42 @@ const store: TaskStore = {
   async update() {
     throw new Error("not used");
   },
+  async delete() {
+    throw new Error("not used");
+  },
+  async getSession() {
+    return undefined;
+  },
+  async configureSession() {
+    throw new Error("not used");
+  },
+  async attachExecutor() {
+    throw new Error("not used");
+  },
+  async setExecutorState() {
+    throw new Error("not used");
+  },
+  async listBatches() {
+    return [];
+  },
+  async getBatch() {
+    return undefined;
+  },
+  async dispatchReady() {
+    return undefined;
+  },
+  async retryBatch() {
+    throw new Error("not used");
+  },
+  async claimBatch() {
+    throw new Error("not used");
+  },
+  async finishBatch() {
+    throw new Error("not used");
+  },
+  async claimQueued() {
+    return [];
+  },
 };
 
 afterEach(async () => {

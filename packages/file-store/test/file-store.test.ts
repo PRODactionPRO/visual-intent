@@ -62,4 +62,78 @@ describe("FileTaskStore", () => {
     };
     expect(persisted.tasks[0]?.id).toBe(created.id);
   });
+
+  it("dispatches and claims a repository-bound task", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-store-"));
+    temporaryDirectories.push(directory);
+    const store = new FileTaskStore(join(directory, "tasks.json"), {
+      root: "/workspace/example",
+      name: "example",
+    });
+    await store.configureSession({
+      projectKey: "example",
+      displayName: "Example",
+      repository: { root: "/workspace/example", name: "example" },
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+    const created = await store.create(input);
+
+    expect(created.repository).toEqual({
+      root: "/workspace/example",
+      name: "example",
+    });
+    const batch = await store.dispatchReady();
+    expect(batch?.status).toBe("waiting_for_executor");
+    expect(batch?.taskIds).toEqual([created.id]);
+    expect((await store.list({ status: "ready" })).length).toBe(0);
+    await store.attachExecutor({
+      repositoryRoot: "/workspace/example",
+      threadId: "thread-example",
+      source: "plugin",
+    });
+    const queued = (await store.listBatches())[0];
+    expect(queued?.status).toBe("queued");
+    const claimed = await store.claimBatch(queued?.id ?? "missing");
+    expect(claimed.tasks[0]?.status).toBe("in_progress");
+    const finished = await store.finishBatch(claimed.batch.id, "completed", {
+      summary: "Implemented",
+      changedFiles: ["src/example.ts"],
+      notes: [],
+    });
+    expect(finished.tasks[0]?.status).toBe("applied");
+
+    await expect(store.delete(created.id)).rejects.toThrow("cannot be deleted");
+
+    const removable = await store.create({
+      ...input,
+      surface: { ...input.surface, id: "surface-2" },
+      intent: { ...input.intent, id: "intent-2" },
+    });
+    await store.delete(removable.id);
+    expect((await store.list()).map((task) => task.id)).toEqual([created.id]);
+  });
+
+  it("recovers pre-batch queued tasks without losing feedback", async () => {
+    const store = await makeStore();
+    const created = await store.create(input);
+    await store.update(created.id, { status: "queued" });
+
+    const repository = { root: "/workspace/legacy", name: "legacy" };
+    const restarted = new FileTaskStore(store.filePath, repository);
+    await restarted.configureSession({
+      projectKey: "legacy",
+      displayName: "Legacy",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+
+    const [task] = await restarted.list();
+    const [batch] = await restarted.listBatches();
+    expect(batch?.status).toBe("waiting_for_executor");
+    expect(batch?.taskIds).toEqual([created.id]);
+    expect(task?.batchId).toBe(batch?.id);
+    expect(task?.status).toBe("queued");
+  });
 });

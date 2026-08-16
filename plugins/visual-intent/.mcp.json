@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "visualIntent": {
+      "title": "Visual Intent",
+      "description": "Local project session, task batch, and implementation status tools.",
+      "cwd": ".",
+      "command": "node",
+      "args": ["./scripts/mcp-proxy.mjs"]
+    }
+  }
+}

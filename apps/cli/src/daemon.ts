@@ -1,10 +1,11 @@
 import { ServerResponse, createServer, type IncomingMessage } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 
 import httpProxy from "http-proxy";
 import { WebSocket, WebSocketServer } from "ws";
 
 import type { TaskStore } from "@visual-intent/core";
+import type { ApplyBatch } from "@visual-intent/protocol";
 import { createOverlayScript } from "@visual-intent/web-overlay";
 
 import { handleApiRequest } from "./api.js";
@@ -14,12 +15,18 @@ export interface DaemonOptions {
   port: number;
   target: string;
   store: TaskStore;
+  apiToken?: string;
+  createDispatcher?: (onChanged: (event: unknown) => void) => {
+    enqueue(batch: ApplyBatch): void;
+    idle?(): Promise<void>;
+  };
 }
 
 export interface RunningDaemon {
   host: string;
   port: number;
   target: string;
+  idle(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -59,11 +66,16 @@ export async function startDaemon(
   options: DaemonOptions,
 ): Promise<RunningDaemon> {
   const target = validateTarget(options.target);
-  const overlayScript = createOverlayScript();
+  const overlayScript = createOverlayScript({ apiToken: options.apiToken });
   const proxy = httpProxy.createProxyServer({
     changeOrigin: true,
     target: target.href,
     ws: true,
+  });
+  const proxiedSockets = new Set<Socket>();
+  proxy.on("open", (socket) => {
+    proxiedSockets.add(socket);
+    socket.once("close", () => proxiedSockets.delete(socket));
   });
   const sockets = new WebSocketServer({ noServer: true });
 
@@ -71,6 +83,12 @@ export async function startDaemon(
     const message = JSON.stringify({ type: "tasks.changed", task });
     sockets.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) client.send(message);
+    });
+  };
+  const dispatcher = options.createDispatcher?.(broadcast);
+  const enqueueBatch = (batchId: string): void => {
+    void options.store.getBatch(batchId).then((batch) => {
+      if (batch) dispatcher?.enqueue(batch);
     });
   };
 
@@ -127,7 +145,12 @@ export async function startDaemon(
 
   const server = createServer((request, response) => {
     void (async () => {
-      if (await handleApiRequest(request, response, options.store, broadcast))
+      if (
+        await handleApiRequest(request, response, options.store, broadcast, {
+          apiToken: options.apiToken,
+          onBatchReady: enqueueBatch,
+        })
+      )
         return;
 
       const url = new URL(
@@ -161,16 +184,28 @@ export async function startDaemon(
       }
     });
   });
+  const connections = new Set<Socket>();
+  server.on("connection", (socket) => {
+    connections.add(socket);
+    socket.once("close", () => connections.delete(socket));
+  });
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(
       request.url ?? "/",
       `http://${request.headers.host ?? options.host}`,
     );
-    if (url.pathname === "/_visual-intent/ws") {
+    if (
+      url.pathname === "/_visual-intent/ws" &&
+      (!options.apiToken || url.searchParams.get("token") === options.apiToken)
+    ) {
       sockets.handleUpgrade(request, socket, head, (client) =>
         sockets.emit("connection", client, request),
       );
+      return;
+    }
+    if (url.pathname === "/_visual-intent/ws") {
+      socket.destroy();
       return;
     }
     proxy.ws(request, socket, head);
@@ -190,12 +225,19 @@ export async function startDaemon(
     host: options.host,
     port: address.port,
     target: target.href,
+    async idle() {
+      await dispatcher?.idle?.();
+    },
     async close() {
-      sockets.clients.forEach((client) => client.close());
+      await dispatcher?.idle?.();
+      sockets.clients.forEach((client) => client.terminate());
+      connections.forEach((socket) => socket.destroy());
+      proxiedSockets.forEach((socket) => socket.destroy());
       await new Promise<void>((resolve, reject) => {
         sockets.close(() => {
           proxy.close();
           server.close((error) => (error ? reject(error) : resolve()));
+          server.closeAllConnections();
         });
       });
     },

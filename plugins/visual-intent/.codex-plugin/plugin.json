@@ -1,0 +1,28 @@
+{
+  "name": "visual-intent",
+  "version": "0.1.0",
+  "description": "Connect a Codex project chat to local Visual Intent review batches.",
+  "author": {
+    "name": "Production"
+  },
+  "homepage": "https://github.com/PRODactionPRO/visual-intent",
+  "repository": "https://github.com/PRODactionPRO/visual-intent",
+  "license": "MIT",
+  "keywords": ["visual-feedback", "codex", "mcp", "local-first"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Visual Intent",
+    "shortDescription": "Route visual review batches to the correct Codex project chat.",
+    "longDescription": "Visual Intent connects a local proxy review session to one repository and one Codex thread, then exposes project-safe task and batch tools through MCP.",
+    "developerName": "Production",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "defaultPrompt": [
+      "Connect this project chat to Visual Intent.",
+      "Show the latest Visual Intent batch status.",
+      "Inspect Visual Intent tasks for this repository."
+    ],
+    "brandColor": "#2563EB"
+  },
+  "mcpServers": "./.mcp.json"
+}

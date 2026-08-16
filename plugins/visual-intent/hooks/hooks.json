@@ -1,0 +1,18 @@
+{
+  "description": "Attach an eligible Codex project chat to its local Visual Intent daemon.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$PLUGIN_ROOT/scripts/register-session.mjs\"",
+            "timeout": 5,
+            "statusMessage": "Connecting Visual Intent project session"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -6,8 +6,11 @@ This roadmap describes direction, not shipped functionality. Each phase should d
 
 - TypeScript monorepo with protocol, core, SDK, and adapters.
 - Loopback reverse proxy with injected overlay.
-- Select, Draw, Comment, Tasks, and Apply.
-- JSON file store, HTTP, WebSocket, and MCP stdio bridge.
+- Contextual Select/Draw composer, editable Tasks queue, and explicit batch Apply.
+- Repository-bound project sessions and durable Apply batch status.
+- Disconnected-safe default plus Codex SDK dispatch to an attached project thread.
+- Codex plugin source with a SessionStart hook, project skill, and daemon-backed MCP tools.
+- JSON file store, token-protected mutations/WebSocket, and MCP stdio bridge.
 - React/Vite example and automated checks.
 
 Exit signal: the team can use captured tasks in a real local project and identify which missing context causes agent rework.
@@ -19,6 +22,8 @@ Exit signal: the team can use captured tasks in a real local project and identif
 - Screenshot attachment and viewport metadata with explicit privacy controls.
 - Task clarification, acceptance criteria, history, and reopen flow.
 - Agent workflow templates that require preview, repository inspection, verification, and result reporting.
+- Clear browser status/history for connected, running, needs-input, completed, and failed batches.
+- Packaged installation and update flow for the Codex plugin.
 - Packaged CLI and a browser extension spike; choose the default adapter from observed use.
 
 Exit signal: repeated use on several internal repositories with materially less back-and-forth than screenshots and chat.

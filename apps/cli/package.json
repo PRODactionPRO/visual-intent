@@ -18,6 +18,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@openai/codex-sdk": "0.147.0",
     "@visual-intent/core": "workspace:*",
     "@visual-intent/file-store": "workspace:*",
     "@visual-intent/mcp-server": "workspace:*",

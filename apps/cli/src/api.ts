@@ -1,12 +1,19 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
+  BatchNotFoundError,
+  BatchStateConflictError,
+  RepositoryMismatchError,
   RevisionConflictError,
+  SessionNotConfiguredError,
   TaskNotFoundError,
+  TaskStateConflictError,
   type TaskStore,
 } from "@visual-intent/core";
 import {
+  AttachExecutorSchema,
   CreateTaskSchema,
+  FinishBatchSchema,
   TaskStatusSchema,
   UpdateTaskSchema,
 } from "@visual-intent/protocol";
@@ -46,12 +53,25 @@ export async function handleApiRequest(
   response: ServerResponse,
   store: TaskStore,
   onTaskChanged: (task: unknown) => void,
+  options: {
+    apiToken?: string;
+    onBatchReady?: (batchId: string) => void;
+  } = {},
 ): Promise<boolean> {
   const url = new URL(
     request.url ?? "/",
     `http://${request.headers.host ?? "127.0.0.1"}`,
   );
   if (!url.pathname.startsWith("/_visual-intent/api/")) return false;
+
+  if (
+    request.method !== "GET" &&
+    options.apiToken &&
+    request.headers["x-visual-intent-token"] !== options.apiToken
+  ) {
+    json(response, 403, { error: "Invalid Visual Intent session token" });
+    return true;
+  }
 
   try {
     if (
@@ -62,7 +82,42 @@ export async function handleApiRequest(
         ok: true,
         service: "visual-intent",
         mode: "local",
+        session: await store.getSession(),
       });
+      return true;
+    }
+
+    if (
+      request.method === "GET" &&
+      url.pathname === "/_visual-intent/api/session"
+    ) {
+      const session = await store.getSession();
+      if (!session) throw new SessionNotConfiguredError();
+      json(response, 200, session);
+      return true;
+    }
+
+    if (
+      request.method === "POST" &&
+      url.pathname === "/_visual-intent/api/session/attach"
+    ) {
+      const session = await store.attachExecutor(
+        AttachExecutorSchema.parse(await readJson(request)),
+      );
+      const batches = (await store.listBatches()).filter(
+        (batch) => batch.status === "queued",
+      );
+      onTaskChanged({ type: "session.attached", session, batches });
+      batches.forEach((batch) => options.onBatchReady?.(batch.id));
+      json(response, 200, { session, queuedBatches: batches.length });
+      return true;
+    }
+
+    if (
+      request.method === "GET" &&
+      url.pathname === "/_visual-intent/api/batches"
+    ) {
+      json(response, 200, await store.listBatches());
       return true;
     }
 
@@ -79,6 +134,24 @@ export async function handleApiRequest(
 
     if (
       request.method === "POST" &&
+      url.pathname === "/_visual-intent/api/tasks/apply"
+    ) {
+      const batch = await store.dispatchReady();
+      const session = await store.getSession();
+      if (batch) {
+        onTaskChanged({ type: "batch.queued", batch, session });
+        options.onBatchReady?.(batch.id);
+      }
+      json(response, 202, {
+        accepted: batch?.taskIds.length ?? 0,
+        batch,
+        session,
+      });
+      return true;
+    }
+
+    if (
+      request.method === "POST" &&
       url.pathname === "/_visual-intent/api/tasks"
     ) {
       const task = await store.create(
@@ -86,6 +159,61 @@ export async function handleApiRequest(
       );
       onTaskChanged(task);
       json(response, 201, task);
+      return true;
+    }
+
+    const batchActionMatch = url.pathname.match(
+      /^\/_visual-intent\/api\/batches\/([^/]+)\/(claim|finish|retry)$/,
+    );
+    if (
+      batchActionMatch?.[1] &&
+      batchActionMatch[2] === "retry" &&
+      request.method === "POST"
+    ) {
+      const retried = await store.retryBatch(
+        decodeURIComponent(batchActionMatch[1]),
+      );
+      onTaskChanged({ type: "batch.retried", ...retried });
+      options.onBatchReady?.(retried.batch.id);
+      json(response, 200, retried);
+      return true;
+    }
+    if (
+      batchActionMatch?.[1] &&
+      batchActionMatch[2] === "claim" &&
+      request.method === "POST"
+    ) {
+      const claimed = await store.claimBatch(
+        decodeURIComponent(batchActionMatch[1]),
+      );
+      onTaskChanged({ type: "batch.in_progress", ...claimed });
+      json(response, 200, claimed);
+      return true;
+    }
+
+    if (
+      batchActionMatch?.[1] &&
+      batchActionMatch[2] === "finish" &&
+      request.method === "POST"
+    ) {
+      const input = FinishBatchSchema.parse(await readJson(request));
+      const finished = await store.finishBatch(
+        decodeURIComponent(batchActionMatch[1]),
+        input.status,
+        input.result,
+      );
+      onTaskChanged({ type: `batch.${input.status}`, ...finished });
+      json(response, 200, finished);
+      return true;
+    }
+
+    const batchMatch = url.pathname.match(
+      /^\/_visual-intent\/api\/batches\/([^/]+)$/,
+    );
+    if (batchMatch?.[1] && request.method === "GET") {
+      const batch = await store.getBatch(decodeURIComponent(batchMatch[1]));
+      if (!batch) throw new BatchNotFoundError(batchMatch[1]);
+      json(response, 200, batch);
       return true;
     }
 
@@ -107,12 +235,33 @@ export async function handleApiRequest(
       return true;
     }
 
+    if (match?.[1] && request.method === "DELETE") {
+      const id = decodeURIComponent(match[1]);
+      await store.delete(id);
+      onTaskChanged({ type: "task.deleted", id });
+      response.writeHead(204, { "cache-control": "no-store" });
+      response.end();
+      return true;
+    }
+
     json(response, 404, { error: "Visual Intent API route not found" });
     return true;
   } catch (error) {
-    if (error instanceof TaskNotFoundError) {
+    if (
+      error instanceof TaskNotFoundError ||
+      error instanceof BatchNotFoundError
+    ) {
       json(response, 404, { error: error.message });
-    } else if (error instanceof RevisionConflictError) {
+    } else if (
+      error instanceof SessionNotConfiguredError ||
+      error instanceof RepositoryMismatchError
+    ) {
+      json(response, 409, { error: error.message });
+    } else if (
+      error instanceof BatchStateConflictError ||
+      error instanceof RevisionConflictError ||
+      error instanceof TaskStateConflictError
+    ) {
       json(response, 409, { error: error.message });
     } else if (error instanceof ZodError || error instanceof SyntaxError) {
       json(response, 400, { error: error.message });

@@ -52,4 +52,27 @@ describe("task lifecycle", () => {
       updateTask(task, { expectedRevision: 2, status: "applied" }),
     ).toThrow(RevisionConflictError);
   });
+
+  it("updates the intent and its comment together", () => {
+    const task = createTask({
+      ...input,
+      annotations: [
+        {
+          id: "annotation-1",
+          kind: "comment",
+          body: "Make it clearer",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    const updated = updateTask(task, {
+      expectedRevision: 1,
+      instruction: "Make the primary action clearer",
+    });
+
+    expect(updated.intent.instruction).toBe("Make the primary action clearer");
+    expect(updated.annotations[0]?.body).toBe(
+      "Make the primary action clearer",
+    );
+  });
 });

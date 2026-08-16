@@ -31,10 +31,13 @@
       "items": { "$ref": "#/$defs/annotation" }
     },
     "intent": { "$ref": "#/$defs/intent" },
+    "repository": { "$ref": "#/$defs/repository" },
+    "batchId": { "type": "string", "minLength": 1 },
     "status": {
       "enum": [
         "draft",
         "ready",
+        "queued",
         "in_progress",
         "needs_input",
         "applied",
@@ -47,6 +50,14 @@
     "result": { "$ref": "#/$defs/result" }
   },
   "$defs": {
+    "repository": {
+      "type": "object",
+      "required": ["root", "name"],
+      "properties": {
+        "root": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 }
+      }
+    },
     "surface": {
       "type": "object",
       "required": ["id", "platform", "uri", "adapter"],

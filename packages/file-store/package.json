@@ -1,0 +1,29 @@
+{
+  "name": "@visual-intent/file-store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@visual-intent/core": "workspace:*",
+    "@visual-intent/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "8.5.1"
+  }
+}

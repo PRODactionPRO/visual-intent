@@ -1,0 +1,36 @@
+{
+  "name": "@visual-intent/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "visual-intent": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "lint": "eslint src test",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@visual-intent/core": "workspace:*",
+    "@visual-intent/file-store": "workspace:*",
+    "@visual-intent/mcp-server": "workspace:*",
+    "@visual-intent/protocol": "workspace:*",
+    "@visual-intent/web-overlay": "workspace:*",
+    "commander": "14.0.2",
+    "http-proxy": "1.18.1",
+    "ws": "8.21.3",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/http-proxy": "1.17.17",
+    "@types/ws": "8.18.1",
+    "tsup": "8.5.1"
+  }
+}

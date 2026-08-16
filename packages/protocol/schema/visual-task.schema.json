@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visual-intent.dev/schema/visual-task-0.1.json",
+  "title": "Visual Intent Task",
+  "type": "object",
+  "required": [
+    "protocolVersion",
+    "id",
+    "surface",
+    "nodes",
+    "regions",
+    "frames",
+    "relations",
+    "annotations",
+    "intent",
+    "status",
+    "revision",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "protocolVersion": { "const": "0.1" },
+    "id": { "type": "string", "minLength": 1 },
+    "surface": { "$ref": "#/$defs/surface" },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "regions": { "type": "array", "items": { "$ref": "#/$defs/region" } },
+    "frames": { "type": "array", "items": { "$ref": "#/$defs/frame" } },
+    "relations": { "type": "array", "items": { "$ref": "#/$defs/relation" } },
+    "annotations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/annotation" }
+    },
+    "intent": { "$ref": "#/$defs/intent" },
+    "status": {
+      "enum": [
+        "draft",
+        "ready",
+        "in_progress",
+        "needs_input",
+        "applied",
+        "rejected"
+      ]
+    },
+    "revision": { "type": "integer", "minimum": 1 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "result": { "$ref": "#/$defs/result" }
+  },
+  "$defs": {
+    "surface": {
+      "type": "object",
+      "required": ["id", "platform", "uri", "adapter"],
+      "properties": {
+        "id": { "type": "string" },
+        "platform": {
+          "enum": ["web", "react-native", "ios", "android", "canvas"]
+        },
+        "uri": { "type": "string" },
+        "title": { "type": "string" },
+        "viewport": {
+          "type": "object",
+          "required": ["width", "height", "devicePixelRatio"],
+          "properties": {
+            "width": { "type": "number", "minimum": 0 },
+            "height": { "type": "number", "minimum": 0 },
+            "devicePixelRatio": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "adapter": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["id", "surfaceId", "kind"],
+      "properties": {
+        "id": { "type": "string" },
+        "surfaceId": { "type": "string" },
+        "kind": {
+          "enum": ["element", "component", "view", "layer", "virtual"]
+        },
+        "name": { "type": "string" },
+        "stableSelector": { "type": "string" },
+        "text": { "type": "string" },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "frame": {
+      "type": "object",
+      "required": [
+        "id",
+        "surfaceId",
+        "x",
+        "y",
+        "width",
+        "height",
+        "scrollX",
+        "scrollY",
+        "scale"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "surfaceId": { "type": "string" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "minimum": 0 },
+        "height": { "type": "number", "minimum": 0 },
+        "scrollX": { "type": "number" },
+        "scrollY": { "type": "number" },
+        "scale": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "region": {
+      "type": "object",
+      "required": [
+        "id",
+        "surfaceId",
+        "frameId",
+        "x",
+        "y",
+        "width",
+        "height",
+        "unit",
+        "coordinateSpace"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "surfaceId": { "type": "string" },
+        "frameId": { "type": "string" },
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "width": { "type": "number", "minimum": 0 },
+        "height": { "type": "number", "minimum": 0 },
+        "unit": { "enum": ["px", "normalized"] },
+        "coordinateSpace": { "enum": ["viewport", "surface", "node"] }
+      }
+    },
+    "entityRef": {
+      "type": "object",
+      "required": ["entity", "id"],
+      "properties": {
+        "entity": {
+          "enum": ["surface", "node", "region", "frame", "annotation"]
+        },
+        "id": { "type": "string" }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "required": ["id", "type", "from", "to"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "enum": ["contains", "targets", "anchors", "precedes", "relates-to"]
+        },
+        "from": { "$ref": "#/$defs/entityRef" },
+        "to": { "$ref": "#/$defs/entityRef" }
+      }
+    },
+    "annotation": {
+      "type": "object",
+      "required": ["id", "kind", "createdAt"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "enum": ["comment", "highlight", "drawing", "measurement"] },
+        "body": { "type": "string" },
+        "nodeId": { "type": "string" },
+        "regionId": { "type": "string" },
+        "author": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "intent": {
+      "type": "object",
+      "required": ["id", "action", "instruction", "acceptanceCriteria"],
+      "properties": {
+        "id": { "type": "string" },
+        "action": { "enum": ["change", "review", "question", "bug"] },
+        "instruction": { "type": "string", "minLength": 1 },
+        "acceptanceCriteria": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": ["summary", "changedFiles", "notes"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "changedFiles": { "type": "array", "items": { "type": "string" } },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

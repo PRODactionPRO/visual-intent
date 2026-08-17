@@ -1,93 +1,95 @@
-# Product
+# Продукт
 
-## Product thesis
+## Продуктовая гипотеза
 
-Software feedback loses meaning while it moves from a visible interface into chat, screenshots, task trackers, and finally source code. Visual Intent captures the user's intent at the interface itself and carries enough structured context for a developer or coding agent to act without guessing what the comment referred to.
+Обратная связь по программному интерфейсу теряет смысл, пока перемещается из видимого экрана в чат, скриншоты, task tracker и наконец в исходный код. Visual Intent фиксирует намерение пользователя непосредственно в интерфейсе и переносит достаточно структурированного контекста, чтобы разработчик или coding-агент мог действовать, не угадывая, к чему относился комментарий.
 
-The product is a platform, not a web-only annotation widget. Web, React Native, iOS, Android, and canvas tools are adapters over the same protocol and task lifecycle.
+Продукт задуман как платформа, а не как web-only виджет аннотаций. Web, React Native, iOS, Android и canvas-инструменты — это adapters над единым протоколом и жизненным циклом задач.
 
-## Initial users
+## Первые пользователи
 
-The first user is a developer or product manager working locally on their own project. The first team use case is an internal product team reviewing a development build. A later commercial use case is an agency giving a client a safe browser review surface and routing approved feedback into the team's existing workflow.
+Первый пользователь — разработчик или product manager, который локально работает над собственным проектом. Первый командный сценарий — внутренняя продуктовая команда, проверяющая development-сборку. Более поздний коммерческий сценарий — студия, которая предоставляет клиенту безопасную браузерную поверхность для ревью и направляет согласованную обратную связь в существующий рабочий процесс команды.
 
-## Principles
+## Принципы
 
-1. **Local first.** The first useful loop runs on one machine without an account or cloud dependency.
-2. **Web first, platform neutral.** Prove the workflow with the browser while keeping protocol entities independent of DOM, React, SwiftUI, or Compose.
-3. **Intent before automation.** Capturing a clear target, region, comment, and expected result matters before autonomous code changes.
-4. **Human-controlled application.** Saving a task only builds the review queue. The explicit Apply action hands the queue to an agent, but never authorizes publishing code.
-5. **Adapters instead of forks.** Platforms, trackers, storage engines, and agents implement stable ports.
-6. **Open contracts.** The local core, protocol, SDK, and basic adapters are intended to be open source.
+1. **Local-first.** Первый полезный цикл работает на одном компьютере без учётной записи и облачной зависимости.
+2. **Web-first, platform-neutral.** Сначала доказываем полезность сценария в браузере, сохраняя сущности протокола независимыми от DOM, React, SwiftUI и Compose.
+3. **Намерение важнее автоматизации.** До автономного изменения кода важнее точно зафиксировать цель, область, комментарий и ожидаемый результат.
+4. **Применение контролирует человек.** Сохранение задачи только формирует очередь ревью. Явное действие Apply передаёт очередь агенту, но никогда не разрешает публикацию кода.
+5. **Adapters вместо форков.** Платформы, task trackers, хранилища и агенты реализуют стабильные ports.
+6. **Открытые контракты.** Локальные core, protocol, SDK и базовые adapters предназначены для открытой публикации.
 
 ## Web-first MVP
 
-The current MVP provides one complete local loop:
+Текущий MVP предоставляет один полный локальный цикл:
 
 ```text
-running localhost app
-  -> Visual Intent reverse proxy
-  -> injected overlay
-  -> selected DOM node or drawn viewport region
-  -> local structured task
-  -> explicit Apply batch
-  -> repository-bound Codex project chat or MCP consumer
-  -> task status and result
+запущенное localhost-приложение
+  -> reverse proxy Visual Intent
+  -> инжектируемый overlay
+  -> выбранный DOM-элемент или нарисованная область viewport
+  -> локальная структурированная задача
+  -> явный Apply-пакет
+  -> привязанная к репозиторию проектная задача Codex или MCP-потребитель
+  -> статус и результат задачи
 ```
 
-The overlay exposes the requested controls:
+Overlay предоставляет согласованные инструменты:
 
-- **Select** captures an element, selector, visible text, selected semantic attributes, and its viewport rectangle, then opens a contextual composer beside it.
-- **Draw** captures an arbitrary viewport rectangle.
-- **Comment** reopens the composer for the current target.
-- **Add task** validates and stores one comment in the editable `ready` queue.
-- **Tasks** shows that queue and supports opening, editing, and deleting items.
-- **Apply** atomically creates a durable batch. A connected project chat receives it; otherwise it waits visibly without losing the comments.
+- **Select** фиксирует элемент, selector, видимый текст, выбранные семантические атрибуты и прямоугольник во viewport, затем открывает контекстный редактор рядом с элементом.
+- **Draw** фиксирует произвольную прямоугольную область viewport.
+- **Comment** повторно открывает редактор для текущей цели.
+- **Add task** проверяет и сохраняет один комментарий в редактируемую очередь `ready`.
+- **Tasks** показывает очередь и позволяет открывать, редактировать и удалять элементы.
+- **Apply** атомарно создаёт надёжный пакет. Для подключённой задачи он остаётся в `Waiting for Codex` до атомарного MCP claim; отдельный SDK worker запускается только в явно выбранном автономном режиме.
 
-The chat running and improving Visual Intent is deliberately separate from chats that implement feedback in proxied products. Each local proxy stores one canonical repository root. A Codex chat must attach with that same root before it can receive Apply work. This lets the browser be Chrome, the Codex in-app browser, or another local browser without changing routing.
+Задача, в которой разрабатывается сам Visual Intent, намеренно отделена от задач, реализующих обратную связь в проксируемых продуктах. Каждый локальный proxy хранит один канонический корень репозитория. Задача Codex должна подключиться с тем же корнем, прежде чем сможет получить работу после Apply. Благодаря этому браузером может быть Chrome, встроенный браузер Codex или другой локальный браузер без изменения маршрутизации.
 
-## MVP success criteria
+## Критерии успеха MVP
 
-- A new contributor can install and open the included demo using the README alone.
-- The overlay works through the proxy without adding an SDK to the target project.
-- A task survives daemon restart in a readable JSON file.
-- Every captured task is stamped with the repository selected by the local daemon, not a browser-provided path.
-- Apply work can run only in the Codex thread attached to that exact repository.
-- Existing uncommitted changes stop automatic execution by default.
-- A disconnected or failed executor leaves a durable, visible batch instead of clearing history.
-- HTTP and MCP clients receive the same protocol shape.
-- A task update cannot silently overwrite a newer revision.
-- Lint, type checks, tests, and production builds pass in CI.
+- Новый участник может установить и открыть демонстрационный проект, пользуясь только README.
+- Overlay работает через proxy без установки SDK в целевой проект.
+- Задача переживает перезапуск daemon и сохраняется в читаемом JSON-файле.
+- Задачи, сессия, пакеты и результаты каждого проекта находятся только в исключённой из Git папке `.visual-intent/` целевого репозитория.
+- Каждая зафиксированная задача получает репозиторий, выбранный локальным daemon, а не путь из браузерного payload.
+- Host-attached пакет может забрать только задача Codex, подключённая к точно этому репозиторию; daemon не пытается стать вторым writer её истории.
+- Существующие незакоммиченные изменения по умолчанию останавливают автоматическое выполнение.
+- Отключённый или завершившийся ошибкой исполнитель оставляет надёжный видимый пакет, а не очищает историю.
+- HTTP- и MCP-клиенты получают одну и ту же форму протокола.
+- Обновление задачи не может незаметно перезаписать более новую ревизию.
+- Lint, проверка типов, тесты и production-сборки проходят в CI.
 
-## Explicit non-goals for this release
+## Явные ограничения текущей версии
 
-- cloud backend or hosted review links;
-- accounts, authentication, permissions, or organizations;
-- multi-user collaboration and conflict-free live editing;
-- source-code mutation before explicit Apply, automatic commit/push/deploy, or destructive Git operations;
-- screenshots, video, asset uploads, or object storage;
-- production browser extension distribution;
-- Jira, Yandex Tracker, Notion, Slack, or webhook delivery;
-- React Native, iOS, or Android runtime adapters;
-- SSO, audit export, policy engines, on-prem control plane, or other enterprise features.
+- облачный backend и размещённые в интернете ссылки для ревью;
+- учётные записи, аутентификация, права доступа и организации;
+- многопользовательская совместная работа и редактирование с разрешением конфликтов в реальном времени;
+- изменение исходного кода до явного Apply, автоматические commit/push/deploy и разрушительные Git-операции;
+- скриншоты, видео, загрузка ассетов и object storage;
+- production-дистрибуция браузерного расширения;
+- доставка в Jira, Яндекс Трекер, Notion, Slack и webhooks;
+- runtime adapters для React Native, iOS и Android;
+- SSO, экспорт аудита, policy engines, on-prem control plane и другие enterprise-функции.
 
-## Open-source and commercial strategy
+## Open-source и коммерческая стратегия
 
-The planned open-source base contains the protocol, local daemon, overlay/adapters, SDK, local stores, MCP bridge, and examples. This makes the tool useful to individual developers and allows other platforms and agents to implement compatible adapters.
+Планируемая открытая база включает protocol, локальный daemon, overlay/adapters, SDK, локальные хранилища, MCP-мост и примеры. Это делает инструмент полезным для отдельных разработчиков и позволяет другим платформам и агентам создавать совместимые adapters.
 
-Commercial value appears when coordination becomes the hard problem rather than capture:
+Коммерческая ценность появляется, когда основной сложностью становится координация, а не сбор обратной связи:
 
-- hosted projects and review environments;
-- internal and external participant roles;
-- secure guest links and review sessions;
-- durable history, media, notifications, and service-level controls;
-- organization policy, SSO/SCIM, audit, private deployment, support, and governance;
-- managed connectors and workflow analytics.
+- размещённые проекты и среды ревью;
+- роли внутренних и внешних участников;
+- безопасные гостевые ссылки и сессии ревью;
+- надёжная история, медиа, уведомления и контроль уровня сервиса;
+- политики организации, SSO/SCIM, аудит, частное развёртывание, поддержка и governance;
+- управляемые connectors и аналитика рабочих процессов.
 
-The open protocol must not require the commercial backend. A local task should remain exportable and processable by third-party tools.
+Открытый протокол не должен требовать коммерческого backend. Локальная задача должна оставаться экспортируемой и доступной для обработки сторонними инструментами.
 
-## Product decisions still open
+## Открытые продуктовые решения
 
-- Whether a future browser extension is the default web adapter or complements the reverse proxy.
-- How source maps and framework devtools map runtime nodes to code without coupling the protocol to React.
-- Which collaboration objects are universal (`Project`, `ReviewSession`, `Participant`) and which stay backend-specific.
-- Which connector SDK guarantees are required before publishing third-party plugins.
+- Станет ли будущее браузерное расширение основным web-adapter или будет дополнять reverse proxy?
+- Как source maps и framework devtools будут связывать runtime nodes с кодом без привязки протокола к React?
+- Как должны работать скриншоты, сгенерированные ассеты, retention, очистка и контроль стоимости агента? Текущий дискуссионный документ: [«Будущая работа с медиа, хранением и стоимостью»](FUTURE-MEDIA-AND-USAGE.md).
+- Какие collaboration-объекты универсальны (`Project`, `ReviewSession`, `Participant`), а какие должны оставаться специфичными для backend?
+- Какие гарантии connector SDK необходимы до публикации сторонних плагинов?

@@ -27,6 +27,7 @@ try {
       body: JSON.stringify({
         repositoryRoot,
         threadId,
+        ownership: "host-attached",
         source: "plugin",
       }),
       signal: AbortSignal.timeout(3500),

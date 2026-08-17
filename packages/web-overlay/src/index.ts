@@ -16,6 +16,7 @@ function bootOverlay(): void {
     executor: {
       kind: "disconnected" | "codex";
       status: string;
+      ownership: "host-attached" | "visual-intent-owned";
       threadId?: string;
     };
   };
@@ -23,7 +24,12 @@ function bootOverlay(): void {
     id: string;
     status: string;
     taskIds: string[];
-    result?: { summary: string };
+    result?: {
+      summary: string;
+      technicalDetails?: string;
+      retryable?: boolean;
+      failureCode?: string;
+    };
   };
 
   const apiBase = "/_visual-intent/api";
@@ -74,6 +80,11 @@ function bootOverlay(): void {
       .vip-runtime-executor { color: #94a3b8; font-size: 11px; text-transform: capitalize; }
       .vip-last-batch { margin-bottom: 10px; padding: 8px 10px; border-radius: 9px; background: rgba(37,99,235,.16); color: #bfdbfe; font-size: 11px; }
       .vip-last-batch[data-status="failed"], .vip-last-batch[data-status="needs_input"] { background: rgba(239,68,68,.14); color: #fecaca; }
+      .vip-last-batch-title { font-weight: 800; }
+      .vip-last-batch-copy { margin-top: 3px; }
+      .vip-last-batch details { margin-top: 7px; color: #cbd5e1; }
+      .vip-last-batch summary { cursor: pointer; }
+      .vip-last-batch pre { max-height: 180px; overflow: auto; margin: 6px 0 0; padding: 7px; border-radius: 7px; background: rgba(15,23,42,.72); color: #cbd5e1; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
       .vip-retry { width: 100%; margin: -2px 0 10px; }
       .vip-retry[hidden] { display: none; }
       .vip-count { display: inline-grid; min-width: 22px; height: 22px; place-items: center; padding: 0 6px; border-radius: 999px; background: #334155; color: white; font-size: 11px; }
@@ -571,8 +582,19 @@ function bootOverlay(): void {
       runtime.dataset.connected = String(connected);
       runtimeProject.textContent = session.displayName;
       runtimeProject.title = `Repository: ${session.repository.name}`;
+      const executorState: Record<string, string> = {
+        connected: "connected",
+        busy: "in progress",
+        needs_input: "needs input",
+        error: "execution failed",
+        disconnected: "disconnected",
+      };
+      const ownershipLabel =
+        session.executor.ownership === "visual-intent-owned"
+          ? "isolated worker · "
+          : "";
       runtimeExecutor.textContent = connected
-        ? `Codex · ${session.executor.status.replaceAll("_", " ")}`
+        ? `Codex · ${ownershipLabel}${executorState[session.executor.status] ?? session.executor.status.replaceAll("_", " ")}`
         : "Codex · disconnected";
 
       const batch = batches[0];
@@ -584,12 +606,46 @@ function bootOverlay(): void {
       }
       lastBatch.hidden = false;
       lastBatch.dataset.status = batch.status;
-      const summary = batch.result?.summary;
-      lastBatch.textContent = summary
-        ? `${batch.status.replaceAll("_", " ")}: ${summary}`
-        : `${batch.taskIds.length} task${batch.taskIds.length === 1 ? "" : "s"} · ${batch.status.replaceAll("_", " ")}`;
-      retryButton.hidden =
-        batch.status !== "needs_input" && batch.status !== "failed";
+      const statusLabels: Record<string, string> = {
+        waiting_for_executor: "Waiting for Codex",
+        queued: "Waiting for isolated worker",
+        in_progress: "In progress",
+        completed: "Completed",
+        needs_input: "Needs input",
+        failed: "Execution failed",
+      };
+      const title = document.createElement("div");
+      title.className = "vip-last-batch-title";
+      title.textContent = `${statusLabels[batch.status] ?? batch.status.replaceAll("_", " ")} · ${batch.taskIds.length} task${batch.taskIds.length === 1 ? "" : "s"}`;
+      const copy = document.createElement("div");
+      copy.className = "vip-last-batch-copy";
+      copy.textContent =
+        batch.status === "failed"
+          ? "Не удалось передать задачи в Codex. Пакет сохранён, изменения не применялись."
+          : batch.status === "waiting_for_executor"
+            ? "Ожидает обработки подключённой задачей Codex."
+            : (batch.result?.summary ?? "");
+      lastBatch.replaceChildren(title, copy);
+      const technicalDetails = batch.result?.technicalDetails;
+      if (technicalDetails) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Technical details";
+        const pre = document.createElement("pre");
+        pre.textContent = technicalDetails;
+        details.append(summary, pre);
+        lastBatch.append(details);
+      }
+      const knownActiveWriter =
+        batch.result?.failureCode === "host_thread_active_writer" ||
+        /already has an active writer|thread-store conflict/iu.test(
+          batch.result?.technicalDetails ?? batch.result?.summary ?? "",
+        );
+      const retryable =
+        batch.status === "needs_input" ||
+        (batch.status === "failed" &&
+          (batch.result?.retryable === true || knownActiveWriter));
+      retryButton.hidden = !retryable;
       retryButton.dataset.batchId = batch.id;
     } catch {
       runtime.dataset.connected = "false";
@@ -769,7 +825,7 @@ function bootOverlay(): void {
       const waiting = result.batch?.status === "waiting_for_executor";
       showToast(
         waiting
-          ? `${result.accepted} task${result.accepted === 1 ? "" : "s"} queued — connect the project Codex chat`
+          ? `Ожидает обработки подключённой задачей Codex · ${result.accepted}`
           : `${result.accepted} task${result.accepted === 1 ? "" : "s"} sent to ${result.session?.displayName ?? "Codex"}`,
       );
     } catch (error) {
@@ -792,7 +848,7 @@ function bootOverlay(): void {
       await Promise.all([loadTasks(), loadRuntime()]);
       showToast(
         result.batch.status === "waiting_for_executor"
-          ? "Batch is waiting for a project Codex chat"
+          ? "Ожидает обработки подключённой задачей Codex"
           : "Batch queued again",
       );
     } catch (error) {

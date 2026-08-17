@@ -1,121 +1,126 @@
-# Architecture
+# Архитектура
 
-## System shape
+## Общая форма системы
 
-The repository is a TypeScript monorepo built with pnpm and Turborepo. TypeScript is not a platform limitation: it implements the first core and web adapter, while interoperability is defined by versioned JSON contracts. Native adapters can be written in Swift or Kotlin and send the same entities over HTTP/WebSocket or a future local transport.
+Репозиторий представляет собой TypeScript-monorepo на pnpm и Turborepo. TypeScript не ограничивает платформы: на нём реализованы первый core и web-adapter, а совместимость определяется версионируемыми JSON-контрактами. Native adapters могут быть написаны на Swift или Kotlin и отправлять те же сущности через HTTP/WebSocket либо будущий локальный transport.
 
 ```mermaid
 flowchart LR
-  App["Local web dev server"] --> Proxy["CLI and reverse proxy"]
-  Proxy --> Browser["Page plus injected overlay"]
-  Browser --> API["Local HTTP and WebSocket API"]
-  API --> Core["Task lifecycle core"]
-  Core --> Store["JSON file adapter"]
-  Store --> Batch["Durable Apply batch"]
-  Batch --> Dispatcher["Codex SDK dispatcher"]
-  Dispatcher --> Thread["Bound Codex project thread"]
-  Store --> MCP["MCP bridge"]
-  MCP --> Agent["Other coding agent"]
+  App["Локальный web dev server"] --> Proxy["CLI и reverse proxy"]
+  Proxy --> Browser["Страница с инжектированным overlay"]
+  Browser --> API["Локальный HTTP и WebSocket API"]
+  API --> Core["Core жизненного цикла задач"]
+  Core --> Store["Adapter JSON-хранилища"]
+  Store --> Batch["Надёжный Apply-пакет"]
+  Batch --> Router["Маршрутизатор владения исполнителем"]
+  Router --> Host["Подключённая задача Codex через MCP"]
+  Router --> Dispatcher["Отдельный Codex SDK worker"]
+  Store --> MCP["MCP-мост"]
+  MCP --> Agent["Другой coding-агент"]
 
-  RN["Future React Native adapter"] -. "same protocol" .-> API
-  IOS["Future iOS adapter"] -. "same protocol" .-> API
-  Android["Future Android adapter"] -. "same protocol" .-> API
+  RN["Будущий React Native adapter"] -. "тот же протокол" .-> API
+  IOS["Будущий iOS adapter"] -. "тот же протокол" .-> API
+  Android["Будущий Android adapter"] -. "тот же протокол" .-> API
 ```
 
-## Package boundaries
+## Границы пакетов
 
-| Layer       | Package                      | Responsibility                              | Must not know about           |
-| ----------- | ---------------------------- | ------------------------------------------- | ----------------------------- |
-| Contracts   | `@visual-intent/protocol`    | Entities, validation, versioned wire format | DOM, storage, agents          |
-| Core        | `@visual-intent/core`        | Task creation, revisions, repository port   | HTTP, filesystem, MCP         |
-| Adapter     | `@visual-intent/file-store`  | Atomic local JSON persistence               | browser UI, target app        |
-| SDK         | `@visual-intent/sdk`         | Typed HTTP calls for consumers              | filesystem implementation     |
-| Adapter     | `@visual-intent/web-overlay` | Runtime web capture UI                      | Node filesystem, MCP          |
-| Adapter     | `@visual-intent/mcp-server`  | Agent-facing MCP tools                      | browser injection, Git        |
-| Composition | `@visual-intent/cli`         | Process lifecycle, proxy, API, dispatcher   | product-specific source code  |
-| Plugin      | `plugins/visual-intent`      | Codex hook, skill, daemon-backed MCP tools  | target-project implementation |
+| Слой        | Пакет                        | Ответственность                                 | Не должен знать о                 |
+| ----------- | ---------------------------- | ----------------------------------------------- | --------------------------------- |
+| Contracts   | `@visual-intent/protocol`    | Сущности, валидация, версионируемый wire format | DOM, хранение, агенты             |
+| Core        | `@visual-intent/core`        | Создание задач, ревизии, repository port        | HTTP, filesystem, MCP             |
+| Adapter     | `@visual-intent/file-store`  | Атомарное локальное JSON-хранение               | браузерный UI, целевое приложение |
+| SDK         | `@visual-intent/sdk`         | Типизированные HTTP-вызовы для потребителей     | реализация filesystem             |
+| Adapter     | `@visual-intent/web-overlay` | Runtime UI для фиксации контекста в браузере    | Node filesystem, MCP              |
+| Adapter     | `@visual-intent/mcp-server`  | MCP-инструменты для агентов                     | инжектирование в браузер, Git     |
+| Composition | `@visual-intent/cli`         | Жизненный цикл процесса, proxy, API, dispatcher | исходный код конкретного продукта |
+| Plugin      | `plugins/visual-intent`      | Codex hook, skill и MCP-инструменты daemon      | реализация целевого проекта       |
 
-Applications compose packages; shared packages do not import from `apps/*`. Provider-specific logic belongs in replaceable adapters.
+Приложения собирают пакеты вместе; общие пакеты не импортируют код из `apps/*`. Логика конкретного provider должна находиться в заменяемых adapters.
 
-## Local runtime
+## Локальный runtime
 
-The CLI accepts a target such as `http://127.0.0.1:3000` and starts a second loopback server, normally on `7310`.
+CLI принимает target, например `http://127.0.0.1:3000`, и запускает второй loopback-сервер, обычно на порту `7310`.
 
-1. Requests outside `/_visual-intent/*` are proxied to the target.
-2. Uncompressed HTML responses receive a script tag before `</body>`.
-3. Assets and the target's development WebSockets pass through the proxy.
-4. The injected script renders in a Shadow DOM, reducing CSS collisions.
-5. Add task writes a `ready` item to a same-origin local HTTP endpoint.
-6. Apply atomically creates one durable batch and moves all ready items to `queued`; the editable UI queue becomes empty without deleting feedback.
-7. A disconnected session keeps the batch at `waiting_for_executor` until an exact repository and Codex thread are attached.
-8. The dispatcher claims a connected batch, resumes that Codex thread with the bound repository as its working directory, and records completion or a visible failure.
-9. Changes are broadcast to open overlays over an authenticated local WebSocket.
-10. The file adapter serializes concurrent writers with a lock and replaces the JSON file atomically.
-11. MCP clients can inspect, retry, claim, and finish the same batches through the daemon or the compatibility file bridge.
+1. Запросы за пределами `/_visual-intent/*` проксируются в target.
+2. В несжатые HTML-ответы перед `</body>` добавляется тег script.
+3. Ассеты и development WebSocket целевого приложения проходят через proxy.
+4. Инжектированный script отображается в Shadow DOM, что уменьшает конфликты CSS.
+5. Add task записывает элемент `ready` в локальный HTTP endpoint того же origin.
+6. Apply атомарно создаёт один надёжный пакет и переводит все готовые элементы в `queued`; редактируемая очередь UI очищается без удаления обратной связи.
+7. Для `host-attached` и отключённой сессии пакет остаётся в `waiting_for_executor`. Подключённая задача Codex забирает его атомарно через MCP; daemon не возобновляет desktop-owned thread через SDK.
+8. Только режим `visual-intent-owned` переводит пакет в `queued` и запускает отдельный SDK worker. Созданный worker можно возобновлять, потому что им владеет сам Visual Intent.
+9. Изменения рассылаются открытым overlay через аутентифицированный локальный WebSocket.
+10. File adapter сериализует конкурирующие записи через lock и атомарно заменяет JSON-файл.
+11. MCP-клиенты могут просматривать, повторять, забирать и завершать те же пакеты через daemon или совместимый файловый мост.
 
-## Project-chat routing
+## Маршрутизация между проектом и задачей Codex
 
 ```mermaid
 sequenceDiagram
-  participant Chat as "Codex project chat"
-  participant Hook as "Plugin hook or CLI attach"
-  participant Daemon as "Visual Intent daemon"
-  participant UI as "Browser overlay"
-  participant SDK as "Codex SDK dispatcher"
+  participant Chat as "Проектная задача Codex"
+  participant Hook as "Plugin hook или CLI attach"
+  participant Daemon as "Daemon Visual Intent"
+  participant UI as "Браузерный overlay"
+  participant MCP as "MCP-мост"
 
-  Chat->>Hook: Open chat in repository
-  Hook->>Daemon: Attach thread ID and canonical Git root
-  Daemon->>Daemon: Reject any repository mismatch
-  UI->>Daemon: Apply ready tasks
-  Daemon->>Daemon: Persist batch before execution
-  Daemon->>SDK: Resume attached thread in bound repository
-  SDK-->>Daemon: completed, needs_input, or failed
-  Daemon-->>UI: Broadcast durable status and result
+  Chat->>Hook: Открытие задачи в репозитории
+  Hook->>Daemon: Подключение ID задачи и канонического Git-корня
+  Daemon->>Daemon: Отклонение несовпадающего репозитория
+  UI->>Daemon: Apply для готовых задач
+  Daemon->>Daemon: Сохранение пакета до выполнения
+  Daemon-->>UI: Waiting for Codex
+  Chat->>MCP: Получение и атомарный claim пакета
+  MCP->>Daemon: batchId и repositoryRoot
+  Chat->>MCP: completed, needs_input или failed
+  Daemon-->>UI: Рассылка сохранённого статуса и результата
 ```
 
-The default session is disconnected. Therefore a Visual Intent development chat can run a proxy for another product without becoming that product's executor. Attachment is explicit and server-validated. The plugin hook improves convenience, while the CLI attach command provides the same binding without requiring the plugin.
+По умолчанию сессия отключена. Поэтому задача разработки Visual Intent может запустить proxy для другого продукта, не становясь исполнителем этого продукта. Подключение выполняется явно и проверяется сервером. Поле `executor.ownership` различает `host-attached` и `visual-intent-owned`: один только `threadId` больше не даёт daemon права запускать resume. Hook плагина упрощает подключение, а команда CLI `attach` обеспечивает ту же привязку без обязательной установки плагина.
 
-A `needs_input` or `failed` batch remains durable. After the reported blocker is resolved, the user or project agent can explicitly retry the same batch; task comments do not need to be recreated.
+Пакет в состоянии `needs_input` или `failed` остаётся сохранённым. После устранения указанной причины пользователь или проектный агент может явно повторить тот же пакет; комментарии не нужно создавать заново.
 
-## Why a reverse proxy
+## Почему используется reverse proxy
 
-The proxy proves the workflow without requiring target applications to install or import an SDK. It also gives the overlay and API one origin. The trade-off is that strict CSP headers are removed from proxied HTML in the local review surface so the injected script can run. The original dev server response is unchanged.
+Proxy позволяет доказать полезность сценария без установки или импорта SDK в целевые приложения. Он также даёт overlay и API единый origin. Компромисс состоит в том, что строгие заголовки CSP удаляются из проксируемого HTML в локальной поверхности ревью, чтобы инжектированный script мог работать. Ответ исходного dev server при этом не изменяется.
 
-This is a development tool, not a production proxy. The CLI rejects non-loopback targets and non-loopback bind addresses.
+Это development-инструмент, а не production proxy. CLI отклоняет target и bind address, которые не являются loopback-адресами.
 
-## Data and consistency
+## Данные и согласованность
 
-The local store is a readable document containing tasks, one project session, and Apply batches:
+Локальное хранилище — читаемый документ, содержащий задачи, одну проектную сессию и Apply-пакеты. Daemon определяет путь из канонического репозитория, переданного через `--repo`, а не из директории, в которой был запущен сам Visual Intent:
 
 ```text
-.visual-intent/tasks.json
+<target-repository>/.visual-intent/tasks.json
 ```
 
-Writes use a temporary file followed by an atomic rename. A short-lived adjacent lock protects the read-modify-write cycle across the daemon and MCP process. Every task has a positive `revision`; updates can include `expectedRevision`, producing a conflict instead of silently losing newer data. Older queued task files are migrated in place: orphaned tasks are grouped into a waiting batch instead of being dropped.
+Метаданные подключения находятся рядом в `<target-repository>/.visual-intent/connection.json`. Размещение обоих файлов внутри целевого репозитория даёт каждому проекту изолированную локальную историю и не превращает репозиторий продукта Visual Intent в общую директорию данных. Вся папка добавляется в локальный Git exclude этого репозитория и не коммитится.
 
-This is sufficient for one-machine development. It is not a multi-user database, distributed lock, backup system, or audit ledger.
+Запись выполняется через временный файл с последующим атомарным rename. Краткоживущий соседний lock защищает цикл чтения-изменения-записи между daemon и MCP-процессом. У каждой задачи есть положительная `revision`; обновления могут передавать `expectedRevision`, вызывая конфликт вместо незаметной потери более новых данных. Старые файлы с задачами в очереди мигрируются на месте: задачи без пакета объединяются в ожидающий пакет, а не удаляются.
 
-## Agent boundary
+Этого достаточно для разработки на одном компьютере. Это не многопользовательская база данных, распределённая блокировка, система резервного копирования или журнал аудита.
 
-The daemon stamps every created task with the repository passed through `--repo`; browser payloads cannot select a filesystem target. A thread attachment must repeat the canonical repository root and is rejected when it differs from the stored session. The Codex dispatcher runs with workspace-write access, no network access, and no interactive approvals; its prompt forbids commits, pushes, deploys, credential changes, worktrees, and destructive actions. It also stops before editing when the repository is already dirty unless the operator deliberately enables `--allow-dirty`.
+## Граница агента
 
-The MCP bridges expose task/batch context and lifecycle operations, not arbitrary shell access. Other coding agents remain responsible for source inspection, edits, and verification inside the stamped repository. This keeps visual capture reusable across Codex, Claude Code, Cursor, and future agents.
+Daemon присваивает каждой создаваемой задаче репозиторий из `--repo`; payload браузера не может выбирать filesystem target. Подключение задачи Codex должно повторно передать канонический корень репозитория и отклоняется, если он отличается от сохранённой сессии. Codex dispatcher запускается с правом записи в workspace, без сетевого доступа и интерактивных подтверждений; его prompt запрещает commits, pushes, deploy, изменение credentials, создание worktrees и разрушительные действия. Он также останавливается до редактирования, если в репозитории уже есть незакоммиченные изменения, кроме случаев, когда оператор осознанно включил `--allow-dirty`.
 
-## Future collaboration backend
+MCP-мосты предоставляют контекст и операции жизненного цикла задач и пакетов, но не произвольный shell-доступ. Другие coding-агенты сами отвечают за изучение исходников, редактирование и проверку внутри указанного репозитория. Это сохраняет визуальный сбор контекста переиспользуемым между Codex, Claude Code, Cursor и будущими агентами.
 
-A collaboration backend is introduced only when shared or external review needs it. It should implement the same task-store and event contracts while adding server-owned concerns:
+## Будущий collaboration backend
 
-- organizations, projects, review sessions, and participants;
-- authenticated principals, authorization, invitations, and guest expiry;
-- PostgreSQL persistence, object storage for media, and durable events;
-- idempotency, audit history, rate limits, retention, and deletion;
-- connector outbox, retries, delivery status, and secret management.
+Collaboration backend появится только тогда, когда понадобится общее или внешнее ревью. Он должен реализовать те же контракты task store и событий, добавляя серверные обязанности:
 
-The local file adapter remains valid and does not become a thin client that requires the hosted service.
+- организации, проекты, сессии ревью и участников;
+- аутентифицированные principals, авторизацию, приглашения и срок действия гостевого доступа;
+- PostgreSQL-хранилище, object storage для медиа и надёжные события;
+- идемпотентность, историю аудита, rate limits, retention и удаление;
+- connector outbox, повторы, статус доставки и управление секретами.
 
-## Connector architecture
+Локальный file adapter остаётся полноценным режимом и не превращается в тонкий клиент, которому обязательно нужен hosted service.
 
-Connectors are plugins behind a stable outbound port, for example:
+## Архитектура connectors
+
+Connectors — это plugins за стабильным outbound port, например:
 
 ```ts
 interface TaskDestination {
@@ -123,15 +128,15 @@ interface TaskDestination {
 }
 ```
 
-Jira, Yandex Tracker, and Notion adapters translate Visual Intent tasks into provider-specific fields. Coding-agent adapters consume the same task through MCP or the SDK. Credentials, retries, idempotency keys, and external IDs stay outside core. No connector is implemented in the MVP.
+Adapters Jira, Яндекс Трекера и Notion преобразуют задачи Visual Intent в поля конкретного provider. Adapters coding-агентов получают ту же задачу через MCP или SDK. Credentials, retries, idempotency keys и external IDs остаются за пределами core. В MVP connectors не реализованы.
 
-## Security boundaries
+## Границы безопасности
 
-- Loopback bind and loopback target are enforced.
-- Request bodies are limited to 1 MB.
-- Task payloads are schema-validated.
-- A random per-daemon token protects all mutations and the Visual Intent WebSocket.
-- The target repository receives a mode-`0600` connection file under its ignored `.visual-intent/` directory.
-- The overlay uses text nodes for captured task display rather than rendering task HTML.
-- The JSON store may contain visible page text and comments; it is Git-ignored by default and should be treated as project data.
-- Read-only loopback endpoints remain unauthenticated in the MVP. This token is a local session boundary, not user authentication or a substitute for a cloud security model.
+- Принудительно используются loopback bind и loopback target.
+- Размер request body ограничен 1 МБ.
+- Payload задач проверяется по схеме.
+- Случайный токен каждого daemon защищает все операции изменения и WebSocket Visual Intent.
+- В целевом репозитории создаётся исключённый из Git файл подключения с правами `0600` в папке `.visual-intent/`.
+- Overlay использует text nodes для отображения сохранённых задач и не рендерит HTML из их содержимого.
+- JSON-хранилище может содержать видимый текст страницы и комментарии; по умолчанию оно исключено из Git и должно рассматриваться как данные проекта.
+- Read-only loopback endpoints в MVP остаются без аутентификации. Токен — граница локальной сессии, а не пользовательская аутентификация и не замена облачной модели безопасности.

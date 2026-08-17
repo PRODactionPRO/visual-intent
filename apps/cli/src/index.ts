@@ -19,6 +19,7 @@ import { runMcpServer } from "@visual-intent/mcp-server";
 
 import { startDaemon } from "./daemon.js";
 import { CodexDispatcher } from "./dispatcher.js";
+import { projectTaskStorePath } from "./project-storage.js";
 
 const execFileAsync = promisify(execFile);
 const program = new Command();
@@ -34,20 +35,22 @@ program
   .requiredOption("--target <url>", "localhost development server to proxy")
   .option("--host <host>", "host to bind", "127.0.0.1")
   .option("--port <port>", "port to bind", "7310")
-  .option("--store <path>", "local task file", ".visual-intent/tasks.json")
   .option(
     "--repo <path>",
-    "repository the coding agent should edit",
+    "repository to edit and store local Visual Intent data in",
     process.cwd(),
   )
   .option("--project <key>", "stable project key")
   .option("--name <name>", "project name shown in the overlay")
   .option(
     "--executor <mode>",
-    "executor mode: disconnected or codex",
+    "executor mode: disconnected or isolated-worker",
     "disconnected",
   )
-  .option("--codex-thread <id>", "existing Codex thread to resume")
+  .option(
+    "--worker-thread <id>",
+    "Visual Intent-owned Codex SDK thread to resume",
+  )
   .option(
     "--allow-dirty",
     "allow Codex to work when the target repository is already dirty",
@@ -58,12 +61,11 @@ program
       target: string;
       host: string;
       port: string;
-      store: string;
       repo: string;
       project?: string;
       name?: string;
       executor: string;
-      codexThread?: string;
+      workerThread?: string;
       allowDirty: boolean;
     }) => {
       const port = Number.parseInt(options.port, 10);
@@ -78,13 +80,16 @@ program
         throw new Error("MVP only binds to a local loopback host");
       }
 
-      const storePath = resolve(options.store);
       const repositoryRoot = await realpath(resolve(options.repo));
-      if (options.executor !== "disconnected" && options.executor !== "codex") {
-        throw new Error("Executor must be disconnected or codex");
+      const storePath = projectTaskStorePath(repositoryRoot);
+      if (
+        options.executor !== "disconnected" &&
+        options.executor !== "isolated-worker"
+      ) {
+        throw new Error("Executor must be disconnected or isolated-worker");
       }
-      if (options.codexThread && options.executor !== "codex") {
-        throw new Error("--codex-thread requires --executor codex");
+      if (options.workerThread && options.executor !== "isolated-worker") {
+        throw new Error("--worker-thread requires --executor isolated-worker");
       }
       const repository = {
         root: repositoryRoot,
@@ -93,6 +98,10 @@ program
       const projectKey = options.project ?? repository.name;
       const displayName = options.name ?? projectKey;
       const apiToken = randomBytes(24).toString("hex");
+      const connectionDirectory = join(repositoryRoot, ".visual-intent");
+      const connectionPath = join(connectionDirectory, "connection.json");
+      await ensureLocalGitExclude(repositoryRoot);
+      await mkdir(connectionDirectory, { recursive: true });
       const store = new FileTaskStore(storePath, repository);
       await store.configureSession({
         projectKey,
@@ -100,17 +109,18 @@ program
         repository,
         targetUrl: options.target,
         proxyUrl: `http://${options.host}:${port}`,
-        ...(options.executor === "codex"
+        ...(options.executor === "isolated-worker"
           ? {
               executor: {
                 kind: "codex" as const,
                 status: "connected" as const,
-                source: options.codexThread
+                ownership: "visual-intent-owned" as const,
+                source: options.workerThread
                   ? ("cli" as const)
                   : ("generated" as const),
-                ...(options.codexThread
+                ...(options.workerThread
                   ? {
-                      threadId: options.codexThread,
+                      threadId: options.workerThread,
                       attachedAt: new Date().toISOString(),
                     }
                   : {}),
@@ -139,10 +149,6 @@ program
         targetUrl: daemon.target,
         proxyUrl: daemonUrl,
       });
-      const connectionDirectory = join(repositoryRoot, ".visual-intent");
-      const connectionPath = join(connectionDirectory, "connection.json");
-      await ensureLocalGitExclude(repositoryRoot);
-      await mkdir(connectionDirectory, { recursive: true });
       await writeFile(
         connectionPath,
         `${JSON.stringify(
@@ -152,6 +158,7 @@ program
             apiToken,
             projectKey,
             repositoryRoot,
+            taskStorePath: storePath,
           },
           null,
           2,
@@ -166,7 +173,7 @@ program
       console.log(`Agent repo:    ${repositoryRoot}`);
       console.log(`Project:       ${session.displayName}`);
       console.log(
-        `Executor:      ${session.executor.kind} (${session.executor.status})`,
+        `Executor:      ${session.executor.kind} (${session.executor.ownership}, ${session.executor.status})`,
       );
       console.log(`Connection:    ${connectionPath}`);
       console.log("Press Ctrl+C to stop.");
@@ -215,6 +222,7 @@ program
           body: JSON.stringify({
             repositoryRoot,
             threadId: options.thread,
+            ownership: "host-attached",
             source: "cli",
           }),
         },

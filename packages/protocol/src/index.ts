@@ -139,6 +139,11 @@ export const TaskSchema = CreateTaskSchema.extend({
 
 export const ExecutorKindSchema = z.enum(["disconnected", "codex"]);
 
+export const ExecutorOwnershipSchema = z.enum([
+  "host-attached",
+  "visual-intent-owned",
+]);
+
 export const ExecutorStatusSchema = z.enum([
   "disconnected",
   "connected",
@@ -150,6 +155,7 @@ export const ExecutorStatusSchema = z.enum([
 export const ProjectExecutorSchema = z.object({
   kind: ExecutorKindSchema,
   status: ExecutorStatusSchema,
+  ownership: ExecutorOwnershipSchema.default("host-attached"),
   threadId: id.optional(),
   source: z.enum(["cli", "plugin", "generated"]).optional(),
   attachedAt: timestamp.optional(),
@@ -180,6 +186,7 @@ export const ConfigureProjectSessionSchema = z.object({
 export const AttachExecutorSchema = z.object({
   repositoryRoot: z.string().min(1),
   threadId: id,
+  ownership: z.literal("host-attached").default("host-attached"),
   source: z.enum(["cli", "plugin", "generated"]).default("plugin"),
 });
 
@@ -196,6 +203,9 @@ export const BatchResultSchema = z.object({
   summary: z.string().min(1),
   changedFiles: z.array(z.string()).default([]),
   notes: z.array(z.string()).default([]),
+  technicalDetails: z.string().min(1).optional(),
+  retryable: z.boolean().optional(),
+  failureCode: z.string().min(1).optional(),
 });
 
 export const ApplyBatchSchema = z.object({
@@ -203,6 +213,7 @@ export const ApplyBatchSchema = z.object({
   sessionId: id,
   taskIds: z.array(id).min(1),
   status: BatchStatusSchema,
+  executorOwnership: ExecutorOwnershipSchema.optional(),
   executorThreadId: id.optional(),
   createdAt: timestamp,
   updatedAt: timestamp,
@@ -248,13 +259,14 @@ export type CreateTask = z.infer<typeof CreateTaskSchema>;
 export type Task = z.infer<typeof TaskSchema>;
 export type UpdateTask = z.infer<typeof UpdateTaskSchema>;
 export type ExecutorKind = z.infer<typeof ExecutorKindSchema>;
+export type ExecutorOwnership = z.infer<typeof ExecutorOwnershipSchema>;
 export type ExecutorStatus = z.infer<typeof ExecutorStatusSchema>;
 export type ProjectExecutor = z.infer<typeof ProjectExecutorSchema>;
 export type ProjectSession = z.infer<typeof ProjectSessionSchema>;
-export type ConfigureProjectSession = z.infer<
+export type ConfigureProjectSession = z.input<
   typeof ConfigureProjectSessionSchema
 >;
-export type AttachExecutor = z.infer<typeof AttachExecutorSchema>;
+export type AttachExecutor = z.input<typeof AttachExecutorSchema>;
 export type BatchStatus = z.infer<typeof BatchStatusSchema>;
 export type BatchResult = z.infer<typeof BatchResultSchema>;
 export type ApplyBatch = z.infer<typeof ApplyBatchSchema>;

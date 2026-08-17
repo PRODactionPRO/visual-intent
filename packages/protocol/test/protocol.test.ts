@@ -117,6 +117,7 @@ describe("CreateTaskSchema", () => {
       executor: {
         kind: "codex",
         status: "connected",
+        ownership: "host-attached",
         threadId: "thread-1",
         source: "plugin",
         attachedAt: timestamp,
@@ -129,12 +130,37 @@ describe("CreateTaskSchema", () => {
       sessionId: session.id,
       taskIds: ["task-1"],
       status: "queued",
+      executorOwnership: session.executor.ownership,
       executorThreadId: session.executor.threadId,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
 
     expect(session.repository.root).toBe("/workspace/example");
+    expect(session.executor.ownership).toBe("host-attached");
+    expect(batch.executorOwnership).toBe("host-attached");
     expect(batch.executorThreadId).toBe("thread-1");
+  });
+
+  it("defaults legacy Codex sessions to safe host ownership", () => {
+    const timestamp = "2026-08-16T12:00:00.000Z";
+    const session = ProjectSessionSchema.parse({
+      id: "session-legacy",
+      projectKey: "legacy",
+      displayName: "Legacy",
+      repository: { root: "/workspace/legacy", name: "legacy" },
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+      executor: {
+        kind: "codex",
+        status: "connected",
+        threadId: "thread-desktop",
+        source: "plugin",
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    expect(session.executor.ownership).toBe("host-attached");
   });
 });

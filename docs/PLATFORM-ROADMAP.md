@@ -1,97 +1,100 @@
-# Platform roadmap
+# Платформенный roadmap
 
-This roadmap describes direction, not shipped functionality. Each phase should deliver a complete user loop before the next platform is added.
+Этот roadmap описывает направление, а не уже выпущенную функциональность. Каждая фаза должна завершать полноценный пользовательский цикл до добавления следующей платформы.
 
-## Phase 0 — Local web proof (implemented)
+## Фаза 0 — локальный web proof (реализовано)
 
-- TypeScript monorepo with protocol, core, SDK, and adapters.
-- Loopback reverse proxy with injected overlay.
-- Contextual Select/Draw composer, editable Tasks queue, and explicit batch Apply.
-- Repository-bound project sessions and durable Apply batch status.
-- Disconnected-safe default plus Codex SDK dispatch to an attached project thread.
-- Codex plugin source with a SessionStart hook, project skill, and daemon-backed MCP tools.
-- JSON file store, token-protected mutations/WebSocket, and MCP stdio bridge.
-- React/Vite example and automated checks.
+- TypeScript-monorepo с protocol, core, SDK и adapters.
+- Loopback reverse proxy с инжектируемым overlay.
+- Контекстный редактор Select/Draw, редактируемая очередь Tasks и явный пакетный Apply.
+- Проектные сессии, привязанные к репозиторию, и надёжный статус Apply-пакетов.
+- Безопасный по умолчанию режим `disconnected`, handoff подключённой задаче через MCP и отдельный, явно включаемый Codex SDK worker.
+- Исходники Codex-плагина с hook `SessionStart`, проектным skill и MCP-инструментами на базе daemon.
+- Файловое JSON-хранилище, защищённые токеном операции изменения и WebSocket, MCP-мост через stdio.
+- Пример на React/Vite и автоматические проверки.
 
-Exit signal: the team can use captured tasks in a real local project and identify which missing context causes agent rework.
+Критерий завершения: команда использует зафиксированные задачи в реальном локальном проекте и понимает, какой недостающий контекст приводит к повторной работе агента.
 
-## Phase 1 — Useful web development loop
+## Фаза 1 — полезный цикл web-разработки
 
-- Framework-aware source hints for React and common web stacks without putting React in core.
-- Resilient selection across scroll, responsive layouts, iframes, and shadow roots.
-- Screenshot attachment and viewport metadata with explicit privacy controls.
-- Task clarification, acceptance criteria, history, and reopen flow.
-- Agent workflow templates that require preview, repository inspection, verification, and result reporting.
-- Clear browser status/history for connected, running, needs-input, completed, and failed batches.
-- Packaged installation and update flow for the Codex plugin.
-- Packaged CLI and a browser extension spike; choose the default adapter from observed use.
+- Framework-aware подсказки исходников для React и распространённых web-стеков без добавления React в core.
+- Надёжный Select при прокрутке, responsive layout, iframe и shadow roots.
+- Скриншоты и метаданные viewport с явным контролем приватности согласно дискуссионному документу [«Будущая работа с медиа, хранением и стоимостью»](FUTURE-MEDIA-AND-USAGE.md).
+- Проектные квоты локальных медиа, предварительный просмотр очистки, retention controls и метрики каждого Apply до внедрения генерации изображений.
+- Уточнение задач, acceptance criteria, история и повторное открытие.
+- Шаблоны агентного workflow, требующие preview, проверки репозитория, верификации и отчёта о результате.
+- Понятные статусы и история в браузере: connected, running, needs-input, completed и failed.
+- Упакованный процесс установки и обновления Codex-плагина.
+- Упакованный CLI и исследовательский browser extension; основной adapter выбирается по результатам наблюдений.
 
-Exit signal: repeated use on several internal repositories with materially less back-and-forth than screenshots and chat.
+Критерий завершения: повторное использование в нескольких внутренних репозиториях требует существенно меньше уточнений, чем обмен скриншотами и сообщениями в чате.
 
-## Phase 2 — Connector plugin foundation
+## Фаза 2 — основа connector plugins
 
-- Public connector SDK, capability manifest, configuration schema, idempotency contract, and conformance tests.
-- Outbound task destinations for Jira, Yandex Tracker, and Notion.
-- Agent adapters for MCP-based tools, Codex, Claude Code, Cursor, and other compatible clients.
-- Delivery preview and explicit confirmation before creating external tasks.
-- External IDs, retry state, dead-letter handling, and safe secret storage.
+- Публичный connector SDK, manifest возможностей, schema конфигурации, контракт идемпотентности и conformance tests.
+- Исходящие направления задач для Jira, Яндекс Трекера и Notion.
+- Agent adapters для MCP-инструментов, Codex, Claude Code, Cursor и других совместимых клиентов.
+- Preview доставки и явное подтверждение до создания внешней задачи.
+- External IDs, состояние повторов, dead-letter handling и безопасное хранение секретов.
 
-Exit signal: one task can be intentionally routed to two different providers without provider logic leaking into core.
+Критерий завершения: одну задачу можно осознанно направить двум различным providers без утечки provider-логики в core.
 
-## Phase 3 — Collaboration backend
+Image-generation provider рассматривается как возможный connector после проверки скриншотов, безопасного жизненного цикла медиа, измерения стоимости и явного подтверждения. Он должен оставаться необязательным и тарифицироваться отдельно.
 
-- Hosted projects, review sessions, team roles, and expiring external-client access.
-- PostgreSQL task/history store and object storage for controlled media.
-- Real-time collaboration, notifications, review assignment, and resolution workflow.
-- Browser extension connected to an authenticated review environment.
-- API/webhooks for studios and internal product teams.
+## Фаза 3 — collaboration backend
 
-Exit signal: an agency can invite a client, collect feedback against a review build, triage it, and route approved work with an auditable history.
+- Hosted projects, review sessions, командные роли и истекающий доступ внешнего клиента.
+- PostgreSQL-хранилище задач и истории и object storage для управляемых медиа.
+- Совместная работа в реальном времени, уведомления, назначение ревью и workflow разрешения комментариев.
+- Браузерное расширение, подключённое к аутентифицированной среде ревью.
+- API и webhooks для студий и внутренних продуктовых команд.
 
-This is the first phase that needs a cloud backend and authentication. It must not make the local open-source loop dependent on the hosted product.
+Критерий завершения: студия может пригласить клиента, собрать обратную связь к review build, обработать её и направить согласованную работу с доступной для аудита историей.
 
-## Phase 4 — React Native adapter
+Это первая фаза, которой нужны облачный backend и аутентификация. Она не должна создавать зависимость локального open-source цикла от hosted-продукта.
 
-- Development-only package connected to Metro and the local daemon.
-- Component hierarchy and props references when the runtime exposes them.
-- Touch selection and drawn regions in iOS and Android emulators.
-- Coordinate normalization for density, safe areas, orientation, and scroll containers.
+## Фаза 4 — React Native adapter
 
-Exit signal: a task captured in a React Native emulator produces the same protocol envelope and agent workflow as a web task.
+- Development-only пакет, подключённый к Metro и локальному daemon.
+- Ссылки на иерархию компонентов и props, когда они доступны в runtime.
+- Touch selection и рисование областей в эмуляторах iOS и Android.
+- Нормализация координат для density, safe areas, orientation и scroll containers.
 
-## Phase 5 — Native iOS adapter
+Критерий завершения: задача, зафиксированная в React Native emulator, создаёт тот же конверт протокола и агентный workflow, что и web-задача.
 
-- Swift package for SwiftUI and UIKit development builds.
-- View/accessibility hierarchy mapping into `Node`.
-- Simulator-first overlay and a local bridge transport.
-- Source hints where Xcode/runtime metadata safely permits them.
+## Фаза 5 — native iOS adapter
 
-Exit signal: Swift tooling can capture and replay visual intent without embedding TypeScript in the application runtime.
+- Swift package для development-сборок SwiftUI и UIKit.
+- Отображение view/accessibility hierarchy в `Node`.
+- Simulator-first overlay и локальный bridge transport.
+- Source hints там, где metadata Xcode/runtime безопасно позволяют их получить.
 
-## Phase 6 — Native Android adapter
+Критерий завершения: Swift-инструменты могут фиксировать и воспроизводить visual intent без встраивания TypeScript в runtime приложения.
 
-- Kotlin library for Jetpack Compose and Android Views development builds.
-- Semantics/layout hierarchy mapping, density-aware coordinates, and emulator overlay.
-- Gradle development-only integration and local bridge transport.
+## Фаза 6 — native Android adapter
 
-Exit signal: Android captures pass the same protocol conformance suite used by web, React Native, and iOS.
+- Kotlin library для Jetpack Compose и Android Views в development-сборках.
+- Отображение semantics/layout hierarchy, density-aware координаты и emulator overlay.
+- Development-only интеграция Gradle и локальный bridge transport.
 
-## Phase 7 — Enterprise product
+Критерий завершения: Android captures проходят тот же набор conformance tests протокола, что и web, React Native и iOS.
 
-- SSO/SCIM, granular roles, policy and approval controls.
-- Audit export, retention/legal hold, regional deployment, and private networking.
-- Managed connector catalog, observability, service-level commitments, and support.
-- On-premise or private-cloud control plane when validated by customer demand.
+## Фаза 7 — enterprise-продукт
 
-Enterprise features are paid extensions around coordination, governance, and operation. The protocol and useful local workflow remain open.
+- SSO/SCIM, детальные роли, policies и approval controls.
+- Экспорт аудита, retention/legal hold, региональное развёртывание и private networking.
+- Управляемый каталог connectors, observability, обязательства по уровню сервиса и поддержка.
+- On-premise или private-cloud control plane после подтверждения спроса клиентов.
 
-## Cross-platform acceptance gate
+Enterprise-функции — платные расширения для координации, governance и эксплуатации. Протокол и полезный локальный workflow остаются открытыми.
 
-Every new adapter must:
+## Межплатформенный критерий приёмки
 
-1. emit the current protocol version and pass shared fixtures;
-2. map platform-native concepts to shared entities without changing core;
-3. keep capture disabled in production builds by default;
-4. document permissions, privacy exposure, and performance cost;
-5. support an example app and an end-to-end local task capture test;
-6. prove compatibility with at least one existing MCP consumer.
+Каждый новый adapter должен:
+
+1. создавать текущую версию протокола и проходить общие fixtures;
+2. отображать platform-native понятия в общие сущности без изменения core;
+3. по умолчанию отключать capture в production-сборках;
+4. документировать permissions, раскрытие приватных данных и влияние на производительность;
+5. включать пример приложения и end-to-end тест локального создания задачи;
+6. доказывать совместимость хотя бы с одним существующим MCP-потребителем.

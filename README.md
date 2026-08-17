@@ -1,29 +1,30 @@
 # Visual Intent
 
-Visual Intent is a local-first visual feedback bridge for software teams. It puts a small annotation overlay on top of a running local web app, saves structured tasks beside the project, and exposes those tasks to coding agents through MCP.
+Visual Intent — локальный мост визуальной обратной связи для команд разработки. Он добавляет небольшой слой аннотаций поверх запущенного локального веб-приложения, сохраняет структурированные задачи рядом с проектом и предоставляет их coding-агентам через MCP.
 
-The current release is a deliberately narrow web-first MVP. It has no cloud backend, accounts, telemetry, or enterprise features.
+Текущая версия — намеренно компактный web-first MVP. В ней нет облачного backend, учётных записей, телеметрии и enterprise-функций.
 
-## What works now
+## Что уже работает
 
-- local reverse proxy for a `localhost` development server;
-- injected overlay with **Select**, **Draw**, **Comment**, **Tasks**, and **Apply**;
-- structured, platform-neutral `Surface`, `Node`, `Region`, `Frame`, `Relation`, `Annotation`, `Intent`, and `Task` entities;
-- JSON file storage with atomic writes, a short-lived file lock, and revision conflict checks;
-- repository-bound project sessions and durable Apply batches;
-- local HTTP API and token-protected mutations/WebSocket notifications;
-- Codex SDK dispatcher plus MCP tools for project chats;
-- a repository-local Codex plugin source with automatic session attachment;
-- a React/Vite example surface.
+- локальный reverse proxy для dev server на `localhost`;
+- инжектируемый overlay с инструментами **Select**, **Draw**, **Comment**, **Tasks** и **Apply**;
+- структурированные platform-neutral сущности `Surface`, `Node`, `Region`, `Frame`, `Relation`, `Annotation`, `Intent` и `Task`;
+- файловое JSON-хранилище с атомарной записью, краткоживущей файловой блокировкой и проверкой конфликтов ревизий;
+- проектные сессии, привязанные к репозиторию, и надёжно сохраняемые Apply-пакеты;
+- локальный HTTP API, защищённые токеном операции изменения и WebSocket-уведомления;
+- явное разделение подключённой задачи Codex и автономного исполнителя на базе Codex SDK;
+- MCP-инструменты для безопасного получения и завершения пакетов проектной задачей Codex;
+- исходники локального Codex-плагина с автоматическим подключением сессии;
+- пример интерфейса на React/Vite.
 
-`Add task` saves one visual comment to the editable local queue. `Apply` atomically creates a durable batch from every ready item. If a Codex project chat is attached, the local dispatcher resumes exactly that thread with the exact server-owned repository as its working directory. Without an attached executor, the batch stays visible as `waiting_for_executor`; feedback is never silently discarded.
+`Add task` сохраняет один визуальный комментарий в редактируемую локальную очередь. `Apply` атомарно создаёт надёжный пакет из всех готовых элементов. Подключённая задача Codex считается `host-attached`: daemon не пытается повторно открыть её через SDK, а оставляет пакет в `waiting_for_executor`, откуда эта же задача атомарно забирает его через MCP. Автономный SDK запускается только в явно выбранном режиме `isolated-worker` и владеет собственной задачей. Обратная связь никогда не удаляется незаметно.
 
-## Requirements
+## Требования
 
-- Node.js 20.19 or newer;
-- pnpm 11.18 (`corepack enable` can provide it).
+- Node.js 20.19 или новее;
+- pnpm 11.18 (можно подключить через `corepack enable`).
 
-## Run the included demo
+## Запуск демонстрационного проекта
 
 ```bash
 corepack enable
@@ -31,24 +32,23 @@ pnpm install
 pnpm demo
 ```
 
-Open <http://127.0.0.1:7310>. Do not open port `5173`: that is the unmodified example app. Port `7310` is the Visual Intent proxy with the overlay.
+Откройте <http://127.0.0.1:7310>. Не открывайте порт `5173`: там работает исходное демонстрационное приложение без изменений. На порту `7310` работает proxy Visual Intent с overlay.
 
-Try this loop:
+Попробуйте следующий сценарий:
 
-1. Click **Select**, then click the green “Start a conversation” button.
-2. Enter a change request in the card that opens beside the selected element.
-3. Click **Add task** to put it in the local queue.
-4. Open **Tasks** to edit or delete saved comments.
-5. Click **Apply** to send the complete ready queue to the coding-agent bridge.
+1. Нажмите **Select**, затем выберите зелёную кнопку «Start a conversation».
+2. Введите описание изменения в карточке, которая откроется рядом с выбранным элементом.
+3. Нажмите **Add task**, чтобы добавить комментарий в локальную очередь.
+4. Откройте **Tasks**, чтобы отредактировать или удалить сохранённые комментарии.
+5. Нажмите **Apply**, чтобы передать всю готовую очередь мосту coding-агента.
 
-Tasks are stored in `.visual-intent/tasks.json`, which is ignored by Git.
-The demo starts disconnected, so Apply is safe to explore: it records a waiting batch but does not edit the example repository.
+Задачи сохраняются в `.visual-intent/tasks.json` целевого репозитория; этот путь исключён из Git. Демонстрационный проект запускается без подключённого исполнителя, поэтому Apply можно исследовать безопасно: он создаёт ожидающий пакет, но не изменяет репозиторий примера.
 
-## Use it with another local web project
+## Использование с другим локальным веб-проектом
 
-First start that project's normal development server. For example, assume it is available at `http://127.0.0.1:3000`.
+Сначала запустите обычный dev server этого проекта. Предположим, что он доступен по адресу `http://127.0.0.1:3000`.
 
-In this repository, install and build Visual Intent once:
+В репозитории Visual Intent один раз установите зависимости и выполните сборку:
 
 ```bash
 corepack enable
@@ -56,27 +56,26 @@ pnpm install
 pnpm build
 ```
 
-Then run the proxy. Replace both absolute paths with real paths on your machine:
+Затем запустите proxy. Замените абсолютный путь к репозиторию на реальный путь на вашем компьютере:
 
 ```bash
 pnpm vip -- start \
   --target http://127.0.0.1:3000 \
   --port 7310 \
-  --store /absolute/path/to/your-project/.visual-intent/tasks.json \
   --repo /absolute/path/to/your-project \
   --project your-project \
-  --name "Your project"
+  --name "Ваш проект"
 ```
 
-Open <http://127.0.0.1:7310>. Your project continues running on its original port; the proxy passes requests and hot-reload WebSockets through while adding the overlay to HTML responses.
+Откройте <http://127.0.0.1:7310>. Proxy всегда определяет путь к хранилищу из `--repo` и записывает задачи в `/absolute/path/to/your-project/.visual-intent/tasks.json`; обратная связь этого проекта никогда не сохраняется в репозитории самого продукта Visual Intent. Проект продолжает работать на исходном порту, а proxy перенаправляет запросы и WebSocket горячей перезагрузки и добавляет overlay в HTML-ответы.
 
-The MVP intentionally accepts only loopback targets and binds only to loopback. If a dev server emits compressed HTML despite the proxy asking for an uncompressed response, the page is proxied but the overlay is not injected.
+MVP намеренно принимает только loopback-адреса и слушает только loopback-интерфейс. Если dev server возвращает сжатый HTML, несмотря на запрос proxy на несжатый ответ, страница будет проксирована, но overlay в неё не добавится.
 
-## Route Apply to the correct Codex project chat
+## Направление Apply в правильную проектную задачу Codex
 
-The default executor is `disconnected`. This is intentional: starting a proxy from the Visual Intent repository must not make the Visual Intent development chat edit whichever product happens to be displayed.
+По умолчанию исполнитель имеет статус `disconnected`. Это сделано намеренно: запуск proxy из репозитория Visual Intent не должен заставлять задачу по разработке Visual Intent изменять любой продукт, который в этот момент показан в браузере.
 
-For an existing Codex project chat, run this command from that chat's project terminal after the proxy is running:
+Для уже существующей проектной задачи Codex после запуска proxy выполните следующую команду в терминале именно этой задачи:
 
 ```bash
 node /absolute/path/to/visual-intent/apps/cli/dist/index.js attach \
@@ -84,44 +83,43 @@ node /absolute/path/to/visual-intent/apps/cli/dist/index.js attach \
   --repo /absolute/path/to/your-project
 ```
 
-Inside Codex, `CODEX_THREAD_ID` supplies the current chat identifier. The daemon validates the canonical repository path before attaching it. The Tasks panel changes from `disconnected` to `connected`; the next Apply resumes that project chat through the local Codex SDK.
+Внутри Codex переменная `CODEX_THREAD_ID` предоставляет идентификатор текущей задачи. Перед подключением daemon проверяет канонический путь к репозиторию. В панели Tasks статус меняется с `disconnected` на `Codex · connected`. Следующий Apply сохраняет пакет со статусом `Waiting for Codex`, но не запускает второй процесс и не пишет в Thread Store. Текущая задача получает пакет через `visual_intent_list_batches` и `visual_intent_claim_batch` после следующего обращения пользователя. Автоматическое пробуждение уже открытой задачи из standalone-daemon пока не используется: для него нет поддерживаемого публичного transport-контракта.
 
-If a separate generated Codex thread is preferable, start the proxy with:
+Если предпочтительнее отдельная автоматически созданная задача Codex, запустите proxy так:
 
 ```bash
 pnpm vip -- start \
   --target http://127.0.0.1:3000 \
   --port 7310 \
-  --store /absolute/path/to/your-project/.visual-intent/tasks.json \
   --repo /absolute/path/to/your-project \
   --project your-project \
-  --executor codex
+  --executor isolated-worker
 ```
 
-The first Apply creates a persistent SDK thread and later batches resume it. By default the dispatcher refuses to edit a repository that already has uncommitted changes. `--allow-dirty` is available only for an intentional, reviewed exception.
+Первый Apply создаёт отдельную SDK-задачу, которой владеет Visual Intent, а последующие пакеты возобновляют только её. При необходимости можно явно передать ранее созданный Visual Intent worker через `--worker-thread <id>`; ID подключённой задачи Desktop сюда передавать нельзя. По умолчанию dispatcher отказывается изменять репозиторий, если в нём уже есть незакоммиченные изменения. Флаг `--allow-dirty` предназначен только для осознанного и предварительно проверенного исключения.
 
-### Codex plugin
+### Плагин Codex
 
-The plugin source is in `plugins/visual-intent`. It contributes:
+Исходники плагина находятся в `plugins/visual-intent`. Плагин добавляет:
 
-- a `SessionStart` hook that attaches a project chat when the matching proxy is already running;
-- a project-session skill that verifies the exact Git root;
-- MCP tools for session, task, batch, claim, and completion status.
+- hook `SessionStart`, который подключает проектную задачу, если соответствующий proxy уже работает;
+- skill проектной сессии, проверяющий точный Git-корень;
+- MCP-инструменты для сессии, задач, пакетов, получения пакета в работу и сохранения результата.
 
-Install the repository marketplace and the plugin:
+Подключите marketplace репозитория и установите плагин:
 
 ```bash
 codex plugin marketplace add PRODactionPRO/visual-intent --ref main
 codex plugin add visual-intent@personal
 ```
 
-Start the Visual Intent proxy for the target repository before opening a new Codex chat in that repository. Codex asks the user to trust a new hook before it can run; open `/hooks`, review `node "$PLUGIN_ROOT/scripts/register-session.mjs"`, and trust that exact definition. Plugin changes are picked up by a new Codex chat after installation. The CLI `attach` command above remains the immediate, plugin-independent path.
+Перед открытием новой задачи Codex в целевом репозитории запустите для него proxy Visual Intent. Перед первым запуском нового hook Codex просит пользователя подтвердить доверие: откройте `/hooks`, проверьте команду `node "$PLUGIN_ROOT/scripts/register-session.mjs"` и подтвердите именно это определение. Изменения плагина подхватываются новой задачей Codex после установки обновления. Команда CLI `attach`, описанная выше, остаётся быстрым способом подключения, не зависящим от плагина.
 
-## Connect another coding agent through MCP
+## Подключение другого coding-агента через MCP
 
-Build the repository first, then point the agent's MCP configuration at the same task file used by the proxy.
+Сначала соберите репозиторий, затем укажите в MCP-конфигурации агента тот же файл задач, который использует proxy.
 
-Generic MCP configuration:
+Универсальная MCP-конфигурация:
 
 ```json
 {
@@ -139,7 +137,7 @@ Generic MCP configuration:
 }
 ```
 
-Codex TOML configuration uses the same command and arguments:
+TOML-конфигурация Codex использует ту же команду и аргументы:
 
 ```toml
 [mcp_servers.visual_intent]
@@ -152,19 +150,19 @@ args = [
 ]
 ```
 
-The file-backed compatibility bridge exposes seven tools:
+Файловый мост совместимости предоставляет семь инструментов:
 
-- `visual_intent_list_tasks` — list all tasks or filter by status;
-- `visual_intent_list_batches` — list Apply batches and their status;
-- `visual_intent_retry_batch` — retry a blocked/failed batch after its blocker is resolved;
-- `visual_intent_claim_batch` — atomically claim one queued batch and mark it `in_progress`;
-- `visual_intent_get_task` — retrieve full visual and revision context;
-- `visual_intent_finish_batch` — store the implementation result for the whole batch;
-- `visual_intent_update_task` — edit instructions or report status and an optional implementation result.
+- `visual_intent_list_tasks` — показать все задачи или отфильтровать их по статусу;
+- `visual_intent_list_batches` — показать Apply-пакеты и их статусы;
+- `visual_intent_retry_batch` — повторно запустить заблокированный или неудачный пакет после устранения причины;
+- `visual_intent_claim_batch` — атомарно забрать один пакет из очереди и перевести его в `in_progress`;
+- `visual_intent_get_task` — получить полный визуальный контекст и данные ревизии;
+- `visual_intent_finish_batch` — сохранить результат реализации всего пакета;
+- `visual_intent_update_task` — изменить инструкцию либо записать статус и необязательный результат реализации.
 
-## Local API
+## Локальный API
 
-All endpoints use the Visual Intent proxy origin:
+Все endpoint используют origin proxy Visual Intent:
 
 ```text
 GET   /_visual-intent/api/health
@@ -184,16 +182,16 @@ POST  /_visual-intent/api/batches/:id/retry
 WS    /_visual-intent/ws
 ```
 
-The daemon writes a mode-`0600` `.visual-intent/connection.json` file in the target repository. It contains the loopback URL and a random session token used for mutations, WebSocket access, CLI attachment, the hook, and the plugin MCP bridge. Keep `.visual-intent/` ignored and never commit that file.
+Daemon хранит всё локальное состояние проверки в `.visual-intent/` целевого репозитория: `tasks.json` содержит задачи, проектную сессию, Apply-пакеты и результаты; файл `connection.json` с правами `0600` содержит loopback URL, вычисленный путь к хранилищу задач и случайный токен сессии, который используется для операций изменения, доступа по WebSocket, подключения через CLI, hook и MCP-мост плагина. CLI добавляет `/.visual-intent/` в локальный Git exclude целевого репозитория. Никогда не добавляйте эти файлы в коммит.
 
-For a quick check:
+Для быстрой проверки:
 
 ```bash
 curl http://127.0.0.1:7310/_visual-intent/api/health
 curl http://127.0.0.1:7310/_visual-intent/api/tasks
 ```
 
-## Validate the repository
+## Проверка репозитория
 
 ```bash
 pnpm lint
@@ -202,36 +200,37 @@ pnpm test
 pnpm build
 ```
 
-Or run the same sequence with:
+Или запустите ту же последовательность одной командой:
 
 ```bash
 pnpm check
 ```
 
-## Repository map
+## Структура репозитория
 
 ```text
 apps/
-  cli/             local daemon, reverse proxy, HTTP/WebSocket API, CLI
-  example-web/     React/Vite test surface
+  cli/             локальный daemon, reverse proxy, HTTP/WebSocket API и CLI
+  example-web/     тестовый интерфейс на React/Vite
 packages/
-  protocol/        stable entities, Zod contracts, JSON Schema
-  core/            task lifecycle and storage port
-  file-store/      local JSON storage adapter
-  sdk/             typed HTTP client
-  web-overlay/     dependency-free injected browser UI
-  mcp-server/      coding-agent bridge over MCP stdio
+  protocol/        стабильные сущности, Zod-контракты и JSON Schema
+  core/            жизненный цикл задач и storage port
+  file-store/      adapter локального JSON-хранилища
+  sdk/             типизированный HTTP-клиент
+  web-overlay/     инжектируемый браузерный UI без зависимостей
+  mcp-server/      мост coding-агента через MCP stdio
 plugins/
-  visual-intent/   Codex hook, skill, and daemon-backed MCP bridge
+  visual-intent/   Codex hook, skill и MCP-мост к daemon
 docs/
   PRODUCT.md
   ARCHITECTURE.md
   PROTOCOL.md
   PLATFORM-ROADMAP.md
+  FUTURE-MEDIA-AND-USAGE.md
 ```
 
-See [Product](docs/PRODUCT.md), [Architecture](docs/ARCHITECTURE.md), [Protocol](docs/PROTOCOL.md), and [Platform roadmap](docs/PLATFORM-ROADMAP.md).
+Подробности: [продукт](docs/PRODUCT.md), [архитектура](docs/ARCHITECTURE.md), [протокол](docs/PROTOCOL.md), [платформенный roadmap](docs/PLATFORM-ROADMAP.md) и дискуссионный документ о [будущей работе с медиа, хранением и стоимостью](docs/FUTURE-MEDIA-AND-USAGE.md).
 
-## License
+## Лицензия
 
 MIT

@@ -147,6 +147,18 @@ describe("task API", () => {
     expect(applied.batch.status).toBe("waiting_for_executor");
     expect(applied.batch.taskIds).toEqual([queuedTask.id]);
 
+    const duplicateApplyResponse = await fetch(`${api}/tasks/apply`, {
+      method: "POST",
+      headers: { "x-visual-intent-token": "test-token" },
+    });
+    const duplicateApply = (await duplicateApplyResponse.json()) as {
+      accepted: number;
+      batch?: unknown;
+    };
+    expect(duplicateApply.accepted).toBe(0);
+    expect(duplicateApply.batch).toBeUndefined();
+    expect(await store.listBatches()).toHaveLength(1);
+
     const readyResponse = await fetch(`${api}/tasks?status=ready`);
     expect(await readyResponse.json()).toEqual([]);
 

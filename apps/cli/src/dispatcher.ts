@@ -3,7 +3,12 @@ import { promisify } from "node:util";
 
 import { Codex } from "@openai/codex-sdk";
 import type { TaskStore } from "@visual-intent/core";
-import type { ApplyBatch, BatchResult, Task } from "@visual-intent/protocol";
+import type {
+  ApplyBatch,
+  BatchResult,
+  ProjectSession,
+  Task,
+} from "@visual-intent/protocol";
 import { z } from "zod";
 
 const execFileAsync = promisify(execFile);
@@ -45,6 +50,27 @@ export interface CodexRunner {
   run(input: CodexRunInput): Promise<CodexRunOutput>;
 }
 
+export interface HostBatchDeliveryInput {
+  batchId: string;
+  repositoryRoot: string;
+  threadId: string;
+}
+
+export interface HostBatchDelivery {
+  deliver(
+    input: HostBatchDeliveryInput,
+  ): Promise<{ status: "delivered" | "waiting_for_executor" }>;
+}
+
+export class WaitingHostBatchDelivery implements HostBatchDelivery {
+  async deliver(): Promise<{ status: "waiting_for_executor" }> {
+    // Codex Desktop currently exposes no supported daemon-facing API that this
+    // local process can use to append to an already active task. The MCP task
+    // store remains the handoff boundary until a supported transport is added.
+    return { status: "waiting_for_executor" };
+  }
+}
+
 export class SdkCodexRunner implements CodexRunner {
   constructor(private readonly codex = new Codex()) {}
 
@@ -69,43 +95,116 @@ export class SdkCodexRunner implements CodexRunner {
 export interface CodexDispatcherOptions {
   store: TaskStore;
   runner?: CodexRunner;
+  hostDelivery?: HostBatchDelivery;
   allowDirty?: boolean;
   onChanged?: (event: unknown) => void;
 }
 
 export class CodexDispatcher {
   private queue: Promise<void> = Promise.resolve();
+  private readonly scheduled = new Set<string>();
   private readonly runner: CodexRunner;
+  private readonly hostDelivery: HostBatchDelivery;
   private readonly allowDirty: boolean;
   private readonly onChanged: (event: unknown) => void;
 
   constructor(private readonly options: CodexDispatcherOptions) {
     this.runner = options.runner ?? new SdkCodexRunner();
+    this.hostDelivery = options.hostDelivery ?? new WaitingHostBatchDelivery();
     this.allowDirty = options.allowDirty ?? false;
     this.onChanged = options.onChanged ?? (() => undefined);
   }
 
   enqueue(batch: ApplyBatch): void {
-    if (batch.status !== "queued") return;
+    if (
+      (batch.status !== "queued" && batch.status !== "waiting_for_executor") ||
+      this.scheduled.has(batch.id)
+    )
+      return;
+    this.scheduled.add(batch.id);
     this.queue = this.queue
-      .then(() => this.execute(batch.id))
+      .then(() => this.route(batch.id))
       .catch((error: unknown) => {
         this.onChanged({
           type: "dispatcher.error",
           batchId: batch.id,
           error: error instanceof Error ? error.message : String(error),
         });
-      });
+      })
+      .finally(() => this.scheduled.delete(batch.id));
   }
 
   async idle(): Promise<void> {
     await this.queue;
   }
 
-  private async execute(batchId: string): Promise<void> {
+  private async route(batchId: string): Promise<void> {
     const session = await this.options.store.getSession();
     if (!session) return;
     if (session.executor.kind !== "codex") return;
+
+    const batch = await this.options.store.getBatch(batchId);
+    if (
+      !batch ||
+      (batch.status !== "queued" && batch.status !== "waiting_for_executor")
+    )
+      return;
+    if (batch.sessionId !== session.id) return;
+
+    if (session.executor.ownership === "host-attached") {
+      await this.deliverToHost(session, batch);
+      return;
+    }
+
+    if (batch.status !== "queued") return;
+    await this.executeIsolated(session, batch.id);
+  }
+
+  private async deliverToHost(
+    session: ProjectSession,
+    batch: ApplyBatch,
+  ): Promise<void> {
+    const threadId = session.executor.threadId;
+    if (!threadId) {
+      this.onChanged({
+        type: "batch.waiting_for_executor",
+        batch,
+        session,
+        delivery: "host_thread_missing",
+      });
+      return;
+    }
+
+    try {
+      const delivery = await this.hostDelivery.deliver({
+        batchId: batch.id,
+        repositoryRoot: session.repository.root,
+        threadId,
+      });
+      this.onChanged({
+        type:
+          delivery.status === "delivered"
+            ? "batch.delivery_sent"
+            : "batch.waiting_for_executor",
+        batch,
+        session,
+        delivery: delivery.status,
+      });
+    } catch (error) {
+      this.onChanged({
+        type: "batch.delivery_failed",
+        batch,
+        session,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private async executeIsolated(
+    session: ProjectSession,
+    batchId: string,
+  ): Promise<void> {
+    if (session.executor.ownership !== "visual-intent-owned") return;
 
     const claimed = await this.options.store.claimBatch(batchId);
     this.onChanged({ type: "batch.in_progress", ...claimed });
@@ -155,12 +254,20 @@ export class CodexDispatcher {
       this.onChanged({ type: `batch.${agentResult.status}`, ...finished });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const activeWriter = isActiveWriterConflict(message);
       const finished = await this.options.store.finishBatch(batchId, "failed", {
-        summary: `Codex execution failed: ${message}`,
+        summary: activeWriter
+          ? "The isolated Codex worker is already active in another process."
+          : "Codex execution failed. The batch was preserved.",
         changedFiles: await gitChangedFiles(session.repository.root).catch(
           () => [],
         ),
         notes: ["No commit or push was performed by Visual Intent."],
+        technicalDetails: message,
+        retryable: activeWriter,
+        failureCode: activeWriter
+          ? "isolated_worker_active_writer"
+          : "codex_execution_failed",
       });
       this.onChanged({ type: "batch.failed", ...finished });
     }
@@ -226,4 +333,8 @@ async function gitChangedFiles(repositoryRoot: string): Promise<string[]> {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function isActiveWriterConflict(message: string): boolean {
+  return /already has an active writer|thread-store conflict/iu.test(message);
 }

@@ -225,7 +225,12 @@ async function attachProject(input) {
   }
   return api("/session/attach", {
     method: "POST",
-    body: JSON.stringify({ repositoryRoot, threadId, source: "plugin" }),
+    body: JSON.stringify({
+      repositoryRoot,
+      threadId,
+      ownership: "host-attached",
+      source: "plugin",
+    }),
   });
 }
 

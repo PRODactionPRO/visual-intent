@@ -148,6 +148,7 @@ export class FileTaskStore implements TaskStore {
         existing?.executor ?? {
           kind: "disconnected" as const,
           status: "disconnected" as const,
+          ownership: "host-attached" as const,
         };
       const session = ProjectSessionSchema.parse({
         id: existing?.id ?? randomUUID(),
@@ -176,11 +177,13 @@ export class FileTaskStore implements TaskStore {
       }
 
       const now = new Date().toISOString();
+      const ownership = input.ownership ?? "host-attached";
       document.session = ProjectSessionSchema.parse({
         ...session,
         executor: {
           kind: "codex",
           status: "connected",
+          ownership,
           threadId: input.threadId,
           source: input.source,
           attachedAt: now,
@@ -188,10 +191,11 @@ export class FileTaskStore implements TaskStore {
         updatedAt: now,
       });
       document.batches = document.batches.map((batch) =>
-        batch.status === "waiting_for_executor"
+        batch.status === "waiting_for_executor" || batch.status === "queued"
           ? ApplyBatchSchema.parse({
               ...batch,
-              status: "queued",
+              status: "waiting_for_executor",
+              executorOwnership: ownership,
               executorThreadId: input.threadId,
               updatedAt: now,
             })
@@ -250,14 +254,15 @@ export class FileTaskStore implements TaskStore {
 
       const now = new Date().toISOString();
       const batchId = randomUUID();
-      const connected =
-        session.executor.kind === "codex" &&
-        session.executor.status !== "disconnected";
+      const status = dispatchStatus(session);
       const batch = ApplyBatchSchema.parse({
         id: batchId,
         sessionId: session.id,
         taskIds: readyTasks.map((task) => task.id),
-        status: connected ? "queued" : "waiting_for_executor",
+        status,
+        ...(session.executor.kind === "codex"
+          ? { executorOwnership: session.executor.ownership }
+          : {}),
         ...(session.executor.threadId
           ? { executorThreadId: session.executor.threadId }
           : {}),
@@ -287,17 +292,24 @@ export class FileTaskStore implements TaskStore {
       if (existing.status !== "needs_input" && existing.status !== "failed") {
         throw new BatchStateConflictError(id, existing.status, "retried");
       }
+      if (existing.status === "failed" && !isRetryableFailure(existing)) {
+        throw new BatchStateConflictError(id, existing.status, "retried");
+      }
 
       const now = new Date().toISOString();
-      const connected = session.executor.kind === "codex";
+      const status = dispatchStatus(session);
       const batchBase: ApplyBatch = { ...existing };
       delete batchBase.completedAt;
+      delete batchBase.executorOwnership;
       delete batchBase.executorThreadId;
       delete batchBase.result;
       delete batchBase.startedAt;
       const batch = ApplyBatchSchema.parse({
         ...batchBase,
-        status: connected ? "queued" : "waiting_for_executor",
+        status,
+        ...(session.executor.kind === "codex"
+          ? { executorOwnership: session.executor.ownership }
+          : {}),
         ...(session.executor.threadId
           ? { executorThreadId: session.executor.threadId }
           : {}),
@@ -322,7 +334,8 @@ export class FileTaskStore implements TaskStore {
         ...session,
         executor: {
           ...executorBase,
-          status: connected ? "connected" : "disconnected",
+          status:
+            session.executor.kind === "codex" ? "connected" : "disconnected",
         },
         updatedAt: now,
       });
@@ -344,9 +357,7 @@ export class FileTaskStore implements TaskStore {
         existing.status !== "queued" &&
         existing.status !== "waiting_for_executor"
       ) {
-        throw new Error(
-          `Batch ${id} cannot be claimed from ${existing.status}`,
-        );
+        throw new BatchStateConflictError(id, existing.status, "claimed");
       }
 
       const now = new Date().toISOString();
@@ -387,6 +398,9 @@ export class FileTaskStore implements TaskStore {
       const index = document.batches.findIndex((batch) => batch.id === id);
       const existing = document.batches[index];
       if (index === -1 || !existing) throw new BatchNotFoundError(id);
+      if (existing.status !== "in_progress") {
+        throw new BatchStateConflictError(id, existing.status, "finished");
+      }
 
       const now = new Date().toISOString();
       const batch = ApplyBatchSchema.parse({
@@ -476,9 +490,7 @@ export class FileTaskStore implements TaskStore {
 
     const now = new Date().toISOString();
     const batchId = randomUUID();
-    const connected =
-      session.executor.kind === "codex" &&
-      session.executor.status !== "disconnected";
+    const status = dispatchStatus(session);
     document.tasks = document.tasks.map((task) =>
       orphaned.some((item) => item.id === task.id)
         ? this.transitionTask(task, "queued", now, batchId)
@@ -489,7 +501,10 @@ export class FileTaskStore implements TaskStore {
         id: batchId,
         sessionId: session.id,
         taskIds: orphaned.map((task) => task.id),
-        status: connected ? "queued" : "waiting_for_executor",
+        status,
+        ...(session.executor.kind === "codex"
+          ? { executorOwnership: session.executor.ownership }
+          : {}),
         ...(session.executor.threadId
           ? { executorThreadId: session.executor.threadId }
           : {}),
@@ -558,7 +573,7 @@ export class FileTaskStore implements TaskStore {
             : undefined,
         batches:
           "batches" in value && Array.isArray(value.batches)
-            ? value.batches.map((batch) => ApplyBatchSchema.parse(batch))
+            ? value.batches.map(parseStoredBatch)
             : [],
       };
     } catch (error) {
@@ -619,4 +634,49 @@ export class FileTaskStore implements TaskStore {
       }
     }
   }
+}
+
+function dispatchStatus(session: ProjectSession): ApplyBatch["status"] {
+  return session.executor.kind === "codex" &&
+    session.executor.ownership === "visual-intent-owned" &&
+    session.executor.status !== "disconnected"
+    ? "queued"
+    : "waiting_for_executor";
+}
+
+function isRetryableFailure(batch: ApplyBatch): boolean {
+  return (
+    batch.result?.retryable === true ||
+    isActiveWriterConflict(
+      batch.result?.technicalDetails ?? batch.result?.summary ?? "",
+    )
+  );
+}
+
+function parseStoredBatch(value: unknown): ApplyBatch {
+  const batch = ApplyBatchSchema.parse(value);
+  if (
+    batch.status !== "failed" ||
+    !batch.result ||
+    batch.result.retryable !== undefined ||
+    !isActiveWriterConflict(batch.result.summary)
+  ) {
+    return batch;
+  }
+
+  return ApplyBatchSchema.parse({
+    ...batch,
+    executorOwnership: batch.executorOwnership ?? "host-attached",
+    result: {
+      ...batch.result,
+      summary: "Codex delivery conflicted with an active host-owned thread.",
+      technicalDetails: batch.result.summary,
+      retryable: true,
+      failureCode: "host_thread_active_writer",
+    },
+  });
+}
+
+function isActiveWriterConflict(message: string): boolean {
+  return /already has an active writer|thread-store conflict/iu.test(message);
 }

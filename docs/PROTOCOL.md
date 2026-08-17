@@ -1,29 +1,29 @@
-# Protocol
+# Протокол
 
-## Goal
+## Цель
 
-Visual Intent Protocol describes visual feedback without making DOM, React, SwiftUI, UIKit, Jetpack Compose, or Android Views part of the shared core. Version `0.1` uses JSON and is validated by Zod at runtime. A language-neutral JSON Schema is published at `packages/protocol/schema/visual-task.schema.json`.
+Visual Intent Protocol описывает визуальную обратную связь, не делая DOM, React, SwiftUI, UIKit, Jetpack Compose или Android Views частью общего core. Версия `0.1` использует JSON и проверяется во время выполнения через Zod. Независимая от языка JSON Schema публикуется в `packages/protocol/schema/visual-task.schema.json`.
 
-## Entities
+## Сущности
 
-| Entity           | Meaning across platforms                 | Web MVP example                              |
-| ---------------- | ---------------------------------------- | -------------------------------------------- |
-| `Surface`        | A reviewable screen or canvas            | URL and viewport                             |
-| `Node`           | A semantic or rendered unit              | DOM element and selector                     |
-| `Frame`          | Coordinate reference at capture time     | viewport, scroll, pixel ratio                |
-| `Region`         | Rectangle in a declared coordinate space | selected element bounds or drawn rectangle   |
-| `Relation`       | Typed link between entities              | region anchors to node                       |
-| `Annotation`     | Human mark or statement                  | comment attached to region/node              |
-| `Intent`         | Requested outcome                        | change, review, question, or bug instruction |
-| `Task`           | Versioned work envelope and lifecycle    | ready item exposed to an agent               |
-| `ProjectSession` | Repository and executor binding          | one proxy project and one Codex thread       |
-| `ApplyBatch`     | Durable dispatch envelope                | tasks grouped by one Apply click             |
+| Сущность         | Значение на разных платформах                         | Пример в web MVP                                              |
+| ---------------- | ----------------------------------------------------- | ------------------------------------------------------------- |
+| `Surface`        | Экран или canvas, доступный для ревью                 | URL и viewport                                                |
+| `Node`           | Семантическая или отображаемая единица                | DOM-элемент и selector                                        |
+| `Frame`          | Координатная система в момент фиксации                | viewport, scroll, pixel ratio                                 |
+| `Region`         | Прямоугольник в объявленной системе координат         | границы элемента или нарисованная область                     |
+| `Relation`       | Типизированная связь между сущностями                 | region привязана к node                                       |
+| `Annotation`     | Пользовательская отметка или высказывание             | комментарий к region/node                                     |
+| `Intent`         | Запрошенный результат                                 | инструкция на изменение, ревью, вопрос или исправление ошибки |
+| `Task`           | Версионируемый рабочий контейнер и его жизненный цикл | элемент `ready`, доступный агенту                             |
+| `ProjectSession` | Привязка репозитория и исполнителя                    | один proxy-проект и одна задача Codex                         |
+| `ApplyBatch`     | Надёжный контейнер передачи                           | задачи, объединённые одним нажатием Apply                     |
 
-`Task.repository` is optional protocol context but server-owned in the local daemon. It identifies the repository an agent should inspect; the injected page cannot choose or override it.
+`Task.repository` — необязательный контекст протокола, которым в локальном daemon владеет сервер. Он указывает репозиторий, который должен изучать агент; инжектированная страница не может выбрать или переопределить его.
 
-Native adapters may add platform-specific detail to future compatible fields, but consumers should be able to act from the stable shared shape.
+Native adapters в будущем могут добавлять специфичные для платформы подробности в совместимые поля, но потребители должны иметь возможность работать на основе стабильной общей формы.
 
-## Task example
+## Пример задачи
 
 ```json
 {
@@ -33,7 +33,7 @@ Native adapters may add platform-specific detail to future compatible fields, bu
     "id": "surface-123",
     "platform": "web",
     "uri": "http://127.0.0.1:7310/settings",
-    "title": "Settings",
+    "title": "Настройки",
     "viewport": { "width": 1440, "height": 900, "devicePixelRatio": 2 },
     "adapter": { "name": "web-overlay", "version": "0.1.0" }
   },
@@ -44,7 +44,7 @@ Native adapters may add platform-specific detail to future compatible fields, bu
       "kind": "element",
       "name": "button",
       "stableSelector": "[data-testid=save-button]",
-      "text": "Save"
+      "text": "Сохранить"
     }
   ],
   "frames": [
@@ -85,7 +85,7 @@ Native adapters may add platform-specific detail to future compatible fields, bu
     {
       "id": "annotation-123",
       "kind": "comment",
-      "body": "Keep this action visible while the form scrolls.",
+      "body": "Оставь эту кнопку видимой во время прокрутки формы.",
       "nodeId": "node-123",
       "regionId": "region-123",
       "createdAt": "2026-08-16T12:00:00.000Z"
@@ -94,7 +94,7 @@ Native adapters may add platform-specific detail to future compatible fields, bu
   "intent": {
     "id": "intent-123",
     "action": "change",
-    "instruction": "Keep this action visible while the form scrolls.",
+    "instruction": "Оставь эту кнопку видимой во время прокрутки формы.",
     "acceptanceCriteria": []
   },
   "repository": {
@@ -109,80 +109,84 @@ Native adapters may add platform-specific detail to future compatible fields, bu
 }
 ```
 
-## Task lifecycle
+## Жизненный цикл задачи
 
 ```mermaid
 stateDiagram-v2
   [*] --> ready: Add task
-  ready --> queued: user Apply creates batch
-  queued --> in_progress: agent claims batch
-  in_progress --> needs_input: context missing
-  needs_input --> in_progress: user clarifies
-  in_progress --> applied: result recorded
-  ready --> rejected: intentionally declined
-  in_progress --> rejected: stopped
+  ready --> queued: пользователь создаёт пакет через Apply
+  queued --> in_progress: агент забирает пакет
+  in_progress --> needs_input: не хватает контекста
+  needs_input --> in_progress: пользователь уточняет задачу
+  in_progress --> applied: результат сохранён
+  ready --> rejected: осознанно отклонено
+  in_progress --> rejected: остановлено
 ```
 
-`draft` is reserved for adapters that support saving incomplete intent. The web MVP creates `ready` tasks directly. Apply does not delete them from persistence: it assigns `batchId` and moves them to `queued`, which removes them from the editable UI queue without risking feedback loss.
+Статус `draft` зарезервирован для adapters, поддерживающих сохранение незавершённого намерения. Web MVP сразу создаёт задачи `ready`. Apply не удаляет их из хранилища: он присваивает `batchId` и переводит задачи в `queued`, поэтому они исчезают из редактируемой очереди UI без риска потерять обратную связь.
 
-An Apply batch has its own lifecycle:
+У Apply-пакета есть собственный жизненный цикл:
 
 ```mermaid
 stateDiagram-v2
-  [*] --> waiting_for_executor: Apply while disconnected
-  [*] --> queued: Apply while connected
-  waiting_for_executor --> queued: attach exact project thread
-  queued --> in_progress: dispatcher or MCP claim
-  in_progress --> completed: implementation recorded
-  in_progress --> needs_input: safe decision required
-  in_progress --> failed: execution error recorded
-  needs_input --> queued: explicit retry after resolution
-  failed --> queued: explicit retry after resolution
+  [*] --> waiting_for_executor: Apply без исполнителя или с host-attached
+  [*] --> queued: Apply с visual-intent-owned worker
+  waiting_for_executor --> in_progress: подключённая задача делает MCP claim
+  queued --> in_progress: SDK dispatcher делает claim
+  in_progress --> completed: реализация сохранена
+  in_progress --> needs_input: требуется безопасное решение
+  in_progress --> failed: сохранена ошибка выполнения
+  needs_input --> waiting_for_executor: явный повтор в host-attached
+  needs_input --> queued: явный повтор в isolated-worker
+  failed --> waiting_for_executor: разрешённый явный повтор в host-attached
+  failed --> queued: разрешённый явный повтор в isolated-worker
 ```
 
-`ProjectSession.repository` is server-owned. `AttachExecutor.repositoryRoot` must exactly match it before a thread ID is accepted. A batch stores that executor thread ID when available so routing remains inspectable after the click.
+`ProjectSession.repository` принадлежит серверу. `AttachExecutor.repositoryRoot` должен точно совпасть с ним до принятия ID задачи Codex. `ProjectExecutor.ownership` явно принимает `host-attached` или `visual-intent-owned`. ID host-задачи используется только как адрес handoff и никогда не передаётся в Codex SDK; SDK может получить только ID собственного worker. Пакет сохраняет снимок ownership и ID, чтобы маршрутизацию можно было проверить после Apply.
 
-Task updates may carry `expectedRevision`. The store increments the revision on every accepted update and rejects a stale expected revision with HTTP `409` or an MCP tool error.
+Apply идемпотентен относительно готовой очереди: после первого вызова задачи уже имеют `batchId`, поэтому повторный вызов не создаёт копию. Claim атомарен, finish принимается только для `in_progress`, а повтор `failed` разрешён только для структурированно помеченной исправимой причины. Известный legacy-конфликт `active writer` мигрируется в такую исправимую причину без изменения исходных `taskIds`.
+
+Обновление задачи может содержать `expectedRevision`. При каждом принятом обновлении store увеличивает ревизию и отклоняет устаревшее ожидаемое значение через HTTP `409` или ошибку MCP-инструмента.
 
 ## HTTP API
 
-| Method   | Path                                     | Purpose                                 |
-| -------- | ---------------------------------------- | --------------------------------------- |
-| `GET`    | `/_visual-intent/api/health`             | local process and session readiness     |
-| `GET`    | `/_visual-intent/api/session`            | project/executor binding                |
-| `POST`   | `/_visual-intent/api/session/attach`     | attach an exact repository and thread   |
-| `GET`    | `/_visual-intent/api/tasks`              | list newest-updated first               |
-| `GET`    | `/_visual-intent/api/tasks?status=ready` | filtered list                           |
-| `GET`    | `/_visual-intent/api/tasks/:id`          | full task                               |
-| `POST`   | `/_visual-intent/api/tasks`              | validate and create a ready task        |
-| `PATCH`  | `/_visual-intent/api/tasks/:id`          | update instruction/status/result        |
-| `DELETE` | `/_visual-intent/api/tasks/:id`          | delete a ready task                     |
-| `POST`   | `/_visual-intent/api/tasks/apply`        | create a batch from every ready task    |
-| `GET`    | `/_visual-intent/api/batches`            | list durable Apply batches              |
-| `GET`    | `/_visual-intent/api/batches/:id`        | read one batch                          |
-| `POST`   | `/_visual-intent/api/batches/:id/claim`  | claim a queued batch                    |
-| `POST`   | `/_visual-intent/api/batches/:id/finish` | record completion, question, or failure |
-| `POST`   | `/_visual-intent/api/batches/:id/retry`  | retry a needs-input or failed batch     |
+| Метод    | Путь                                     | Назначение                                     |
+| -------- | ---------------------------------------- | ---------------------------------------------- |
+| `GET`    | `/_visual-intent/api/health`             | готовность локального процесса и сессии        |
+| `GET`    | `/_visual-intent/api/session`            | привязка проекта и исполнителя                 |
+| `POST`   | `/_visual-intent/api/session/attach`     | подключить точный репозиторий и задачу Codex   |
+| `GET`    | `/_visual-intent/api/tasks`              | показать задачи, начиная с недавно обновлённых |
+| `GET`    | `/_visual-intent/api/tasks?status=ready` | отфильтрованный список                         |
+| `GET`    | `/_visual-intent/api/tasks/:id`          | полная задача                                  |
+| `POST`   | `/_visual-intent/api/tasks`              | проверить и создать задачу `ready`             |
+| `PATCH`  | `/_visual-intent/api/tasks/:id`          | обновить инструкцию, статус или результат      |
+| `DELETE` | `/_visual-intent/api/tasks/:id`          | удалить задачу `ready`                         |
+| `POST`   | `/_visual-intent/api/tasks/apply`        | создать пакет из всех задач `ready`            |
+| `GET`    | `/_visual-intent/api/batches`            | показать сохранённые Apply-пакеты              |
+| `GET`    | `/_visual-intent/api/batches/:id`        | получить один пакет                            |
+| `POST`   | `/_visual-intent/api/batches/:id/claim`  | забрать ожидающий или `queued` пакет в работу  |
+| `POST`   | `/_visual-intent/api/batches/:id/finish` | сохранить завершение, вопрос или ошибку        |
+| `POST`   | `/_visual-intent/api/batches/:id/retry`  | повторить пакет `needs_input` или `failed`     |
 
-Create requests omit server-owned task fields: `id`, `status`, `revision`, `createdAt`, and `updatedAt`.
+Запросы на создание не содержат серверные поля задачи: `id`, `status`, `revision`, `createdAt` и `updatedAt`.
 
-Example update:
+Пример обновления:
 
 ```json
 {
   "expectedRevision": 1,
   "status": "applied",
   "result": {
-    "summary": "Made the action bar sticky within the settings form.",
+    "summary": "Панель действий закреплена внутри формы настроек.",
     "changedFiles": ["src/settings/action-bar.tsx"],
-    "notes": ["Verified at mobile and desktop widths."]
+    "notes": ["Проверено на мобильной и десктопной ширине."]
   }
 }
 ```
 
-## WebSocket events
+## События WebSocket
 
-Connect to `/_visual-intent/ws?token=<session-token>`. After a task, session, or batch change the daemon emits:
+Подключение выполняется к `/_visual-intent/ws?token=<session-token>`. После изменения задачи, сессии или пакета daemon отправляет событие:
 
 ```json
 {
@@ -191,18 +195,18 @@ Connect to `/_visual-intent/ws?token=<session-token>`. After a task, session, or
 }
 ```
 
-Messages include the changed entity and related context. Consumers must ignore unknown future event fields.
+Сообщения включают изменённую сущность и связанный контекст. Потребители должны игнорировать неизвестные поля будущих событий.
 
-## MCP bridge
+## MCP-мост
 
-The compatibility stdio server exposes `visual_intent_list_tasks`, `visual_intent_list_batches`, `visual_intent_retry_batch`, `visual_intent_claim_batch`, `visual_intent_get_task`, `visual_intent_finish_batch`, and `visual_intent_update_task`. The Codex plugin adds daemon-backed session attachment and the same task/batch operations. Claiming atomically moves one batch and all of its tasks to `in_progress`.
+Совместимый stdio-сервер предоставляет `visual_intent_list_tasks`, `visual_intent_list_batches`, `visual_intent_retry_batch`, `visual_intent_claim_batch`, `visual_intent_get_task`, `visual_intent_finish_batch` и `visual_intent_update_task`. Плагин Codex добавляет подключение сессии через daemon и те же операции над задачами и пакетами. Получение пакета атомарно переводит сам пакет и все его задачи в `in_progress`.
 
-MCP is a transport adapter, not part of the domain model. An agent may use a returned selector and region as evidence, but must inspect the current source and runtime before changing code because runtime selectors can become stale.
+MCP — transport adapter, а не часть domain model. Агент может использовать возвращённые selector и region как свидетельство, но до изменения кода должен изучить актуальные исходники и runtime, потому что runtime selectors могут устареть.
 
-## Versioning rules
+## Правила версионирования
 
-- `protocolVersion` identifies the wire contract, not the package version.
-- Additive optional fields are compatible within `0.1`.
-- Removing, renaming, changing meaning, or making an optional field required needs a new protocol version and migration notes.
-- Adapters identify their own name and version on `Surface.adapter`.
-- Unknown versions must be rejected rather than partially interpreted.
+- `protocolVersion` определяет wire contract, а не версию пакета.
+- Добавление необязательных полей совместимо внутри `0.1`.
+- Удаление, переименование, изменение смысла или превращение необязательного поля в обязательное требует новой версии протокола и migration notes.
+- Adapters указывают собственное имя и версию в `Surface.adapter`.
+- Неизвестные версии должны отклоняться, а не интерпретироваться частично.

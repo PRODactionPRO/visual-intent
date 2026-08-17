@@ -105,7 +105,8 @@ export async function handleApiRequest(
         AttachExecutorSchema.parse(await readJson(request)),
       );
       const batches = (await store.listBatches()).filter(
-        (batch) => batch.status === "queued",
+        (batch) =>
+          batch.status === "queued" || batch.status === "waiting_for_executor",
       );
       onTaskChanged({ type: "session.attached", session, batches });
       batches.forEach((batch) => options.onBatchReady?.(batch.id));
@@ -139,7 +140,7 @@ export async function handleApiRequest(
       const batch = await store.dispatchReady();
       const session = await store.getSession();
       if (batch) {
-        onTaskChanged({ type: "batch.queued", batch, session });
+        onTaskChanged({ type: `batch.${batch.status}`, batch, session });
         options.onBatchReady?.(batch.id);
       }
       json(response, 202, {

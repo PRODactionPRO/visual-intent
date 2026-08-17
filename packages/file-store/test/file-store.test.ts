@@ -90,10 +90,12 @@ describe("FileTaskStore", () => {
     await store.attachExecutor({
       repositoryRoot: "/workspace/example",
       threadId: "thread-example",
+      ownership: "host-attached",
       source: "plugin",
     });
     const queued = (await store.listBatches())[0];
-    expect(queued?.status).toBe("queued");
+    expect(queued?.status).toBe("waiting_for_executor");
+    expect(queued?.executorOwnership).toBe("host-attached");
     const claimed = await store.claimBatch(queued?.id ?? "missing");
     expect(claimed.tasks[0]?.status).toBe("in_progress");
     const finished = await store.finishBatch(claimed.batch.id, "completed", {
@@ -135,5 +137,181 @@ describe("FileTaskStore", () => {
     expect(batch?.taskIds).toEqual([created.id]);
     expect(task?.batchId).toBe(batch?.id);
     expect(task?.status).toBe("queued");
+  });
+
+  it("queues SDK execution only for a Visual Intent-owned worker", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-store-"));
+    temporaryDirectories.push(directory);
+    const repository = { root: "/workspace/worker", name: "worker" };
+    const store = new FileTaskStore(join(directory, "tasks.json"), repository);
+    await store.configureSession({
+      projectKey: "worker",
+      displayName: "Worker",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+      executor: {
+        kind: "codex",
+        status: "connected",
+        ownership: "visual-intent-owned",
+        source: "generated",
+      },
+    });
+    const created = await store.create(input);
+
+    const batch = await store.dispatchReady();
+
+    expect(batch?.status).toBe("queued");
+    expect(batch?.executorOwnership).toBe("visual-intent-owned");
+    expect(batch?.taskIds).toEqual([created.id]);
+  });
+
+  it("atomically claims a waiting batch only once", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-store-"));
+    temporaryDirectories.push(directory);
+    const repository = { root: "/workspace/claim", name: "claim" };
+    const store = new FileTaskStore(join(directory, "tasks.json"), repository);
+    await store.configureSession({
+      projectKey: "claim",
+      displayName: "Claim",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+    await store.create(input);
+    const batch = await store.dispatchReady();
+    if (!batch) throw new Error("Expected batch");
+
+    const claims = await Promise.allSettled([
+      store.claimBatch(batch.id),
+      store.claimBatch(batch.id),
+    ]);
+
+    expect(
+      claims.filter((result) => result.status === "fulfilled"),
+    ).toHaveLength(1);
+    expect(
+      claims.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
+    expect((await store.getBatch(batch.id))?.status).toBe("in_progress");
+    expect((await store.list())[0]?.status).toBe("in_progress");
+  });
+
+  it("keeps failed task ids and permits only one explicit retry", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-store-"));
+    temporaryDirectories.push(directory);
+    const repository = { root: "/workspace/retry", name: "retry" };
+    const store = new FileTaskStore(join(directory, "tasks.json"), repository);
+    await store.configureSession({
+      projectKey: "retry",
+      displayName: "Retry",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+    const created = await store.create(input);
+    const batch = await store.dispatchReady();
+    if (!batch) throw new Error("Expected batch");
+    await store.claimBatch(batch.id);
+    await store.finishBatch(batch.id, "failed", {
+      summary: "thread-store conflict: thread already has an active writer",
+      changedFiles: [],
+      notes: [],
+    });
+
+    expect((await store.getBatch(batch.id))?.result).toEqual(
+      expect.objectContaining({
+        retryable: true,
+        failureCode: "host_thread_active_writer",
+      }),
+    );
+
+    const retries = await Promise.allSettled([
+      store.retryBatch(batch.id),
+      store.retryBatch(batch.id),
+    ]);
+    const retried = retries.find((result) => result.status === "fulfilled");
+
+    expect(retried?.status).toBe("fulfilled");
+    expect(
+      retries.filter((result) => result.status === "rejected"),
+    ).toHaveLength(1);
+    expect(await store.listBatches()).toHaveLength(1);
+    expect((await store.getBatch(batch.id))?.taskIds).toEqual([created.id]);
+    expect((await store.getBatch(batch.id))?.status).toBe(
+      "waiting_for_executor",
+    );
+    expect((await store.list())[0]?.status).toBe("queued");
+  });
+
+  it.each([
+    ["completed", "applied", "connected"],
+    ["needs_input", "needs_input", "needs_input"],
+    ["failed", "rejected", "error"],
+  ] as const)(
+    "finishes %s batches and tasks consistently",
+    async (batchStatus, taskStatus, executorStatus) => {
+      const directory = await mkdtemp(join(tmpdir(), "visual-intent-store-"));
+      temporaryDirectories.push(directory);
+      const repository = {
+        root: `/workspace/${batchStatus}`,
+        name: batchStatus,
+      };
+      const store = new FileTaskStore(
+        join(directory, "tasks.json"),
+        repository,
+      );
+      await store.configureSession({
+        projectKey: batchStatus,
+        displayName: batchStatus,
+        repository,
+        targetUrl: "http://127.0.0.1:5173",
+        proxyUrl: "http://127.0.0.1:7310",
+      });
+      await store.create(input);
+      const batch = await store.dispatchReady();
+      if (!batch) throw new Error("Expected batch");
+      await store.claimBatch(batch.id);
+
+      await store.finishBatch(batch.id, batchStatus, {
+        summary: `Finished as ${batchStatus}`,
+        changedFiles: [],
+        notes: [],
+      });
+
+      expect((await store.getBatch(batch.id))?.status).toBe(batchStatus);
+      expect((await store.list())[0]?.status).toBe(taskStatus);
+      expect((await store.getSession())?.executor.status).toBe(executorStatus);
+      await expect(
+        store.finishBatch(batch.id, batchStatus, {
+          summary: "Duplicate finish",
+          changedFiles: [],
+          notes: [],
+        }),
+      ).rejects.toThrow("cannot be finished");
+    },
+  );
+
+  it("rejects an executor attached to a different repository", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-store-"));
+    temporaryDirectories.push(directory);
+    const repository = { root: "/workspace/exact", name: "exact" };
+    const store = new FileTaskStore(join(directory, "tasks.json"), repository);
+    await store.configureSession({
+      projectKey: "exact",
+      displayName: "Exact",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+
+    await expect(
+      store.attachExecutor({
+        repositoryRoot: "/workspace/other",
+        threadId: "thread-other",
+        ownership: "host-attached",
+        source: "plugin",
+      }),
+    ).rejects.toThrow("repository mismatch");
   });
 });

@@ -54,6 +54,9 @@ describe("MCP bridge", () => {
       async retryBatch() {
         throw new Error("not used");
       },
+      async approveDirtyBatch() {
+        throw new Error("not used");
+      },
       async claimBatch() {
         throw new Error("not used");
       },
@@ -81,6 +84,7 @@ describe("MCP bridge", () => {
       "visual_intent_list_tasks",
       "visual_intent_list_batches",
       "visual_intent_retry_batch",
+      "visual_intent_approve_dirty_batch",
       "visual_intent_claim_batch",
       "visual_intent_get_task",
       "visual_intent_finish_batch",

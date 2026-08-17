@@ -132,6 +132,22 @@ describe("CreateTaskSchema", () => {
       status: "queued",
       executorOwnership: session.executor.ownership,
       executorThreadId: session.executor.threadId,
+      workingTreeBaseline: {
+        capturedAt: timestamp,
+        fingerprint: "baseline-1",
+        files: [
+          {
+            path: "src/existing.ts",
+            status: " M",
+            fingerprint: "file-1",
+          },
+        ],
+      },
+      dirtyWorktreeApproval: {
+        approvedAt: timestamp,
+        baselineFingerprint: "baseline-1",
+        source: "overlay",
+      },
       createdAt: timestamp,
       updatedAt: timestamp,
     });
@@ -140,6 +156,8 @@ describe("CreateTaskSchema", () => {
     expect(session.executor.ownership).toBe("host-attached");
     expect(batch.executorOwnership).toBe("host-attached");
     expect(batch.executorThreadId).toBe("thread-1");
+    expect(batch.workingTreeBaseline?.files[0]?.path).toBe("src/existing.ts");
+    expect(batch.dirtyWorktreeApproval?.source).toBe("overlay");
   });
 
   it("defaults legacy Codex sessions to safe host ownership", () => {

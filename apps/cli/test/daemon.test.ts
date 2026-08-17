@@ -52,6 +52,9 @@ const store: TaskStore = {
   async retryBatch() {
     throw new Error("not used");
   },
+  async approveDirtyBatch() {
+    throw new Error("not used");
+  },
   async claimBatch() {
     throw new Error("not used");
   },

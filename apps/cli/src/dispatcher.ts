@@ -1,6 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
 import { Codex } from "@openai/codex-sdk";
 import type { TaskStore } from "@visual-intent/core";
 import type {
@@ -10,8 +7,6 @@ import type {
   Task,
 } from "@visual-intent/protocol";
 import { z } from "zod";
-
-const execFileAsync = promisify(execFile);
 
 const AgentResultSchema = z.object({
   status: z.enum(["completed", "needs_input", "failed"]),
@@ -96,7 +91,6 @@ export interface CodexDispatcherOptions {
   store: TaskStore;
   runner?: CodexRunner;
   hostDelivery?: HostBatchDelivery;
-  allowDirty?: boolean;
   onChanged?: (event: unknown) => void;
 }
 
@@ -105,13 +99,11 @@ export class CodexDispatcher {
   private readonly scheduled = new Set<string>();
   private readonly runner: CodexRunner;
   private readonly hostDelivery: HostBatchDelivery;
-  private readonly allowDirty: boolean;
   private readonly onChanged: (event: unknown) => void;
 
   constructor(private readonly options: CodexDispatcherOptions) {
     this.runner = options.runner ?? new SdkCodexRunner();
     this.hostDelivery = options.hostDelivery ?? new WaitingHostBatchDelivery();
-    this.allowDirty = options.allowDirty ?? false;
     this.onChanged = options.onChanged ?? (() => undefined);
   }
 
@@ -207,27 +199,13 @@ export class CodexDispatcher {
     if (session.executor.ownership !== "visual-intent-owned") return;
 
     const claimed = await this.options.store.claimBatch(batchId);
+    if (claimed.batch.status === "needs_input") {
+      this.onChanged({ type: "batch.needs_input", ...claimed });
+      return;
+    }
     this.onChanged({ type: "batch.in_progress", ...claimed });
 
     try {
-      const dirtyFiles = await gitChangedFiles(session.repository.root);
-      if (!this.allowDirty && dirtyFiles.length > 0) {
-        const finished = await this.options.store.finishBatch(
-          batchId,
-          "needs_input",
-          {
-            summary:
-              "Codex stopped before editing because the repository already has uncommitted changes.",
-            changedFiles: dirtyFiles,
-            notes: [
-              "Review or commit the existing changes, then create a new Apply batch.",
-            ],
-          },
-        );
-        this.onChanged({ type: "batch.needs_input", ...finished });
-        return;
-      }
-
       const output = await this.runner.run({
         repositoryRoot: session.repository.root,
         threadId: session.executor.threadId,
@@ -240,10 +218,9 @@ export class CodexDispatcher {
       }
 
       const agentResult = AgentResultSchema.parse(JSON.parse(output.response));
-      const observedFiles = await gitChangedFiles(session.repository.root);
       const result: BatchResult = {
         summary: agentResult.summary,
-        changedFiles: unique([...agentResult.changedFiles, ...observedFiles]),
+        changedFiles: agentResult.changedFiles,
         notes: agentResult.notes,
       };
       const finished = await this.options.store.finishBatch(
@@ -259,9 +236,7 @@ export class CodexDispatcher {
         summary: activeWriter
           ? "The isolated Codex worker is already active in another process."
           : "Codex execution failed. The batch was preserved.",
-        changedFiles: await gitChangedFiles(session.repository.root).catch(
-          () => [],
-        ),
+        changedFiles: [],
         notes: ["No commit or push was performed by Visual Intent."],
         technicalDetails: message,
         retryable: activeWriter,
@@ -316,23 +291,6 @@ Safety and workflow requirements:
 <visual_intent_tasks>
 ${JSON.stringify(payload, null, 2)}
 </visual_intent_tasks>`;
-}
-
-async function gitChangedFiles(repositoryRoot: string): Promise<string[]> {
-  const { stdout } = await execFileAsync(
-    "git",
-    ["-C", repositoryRoot, "status", "--porcelain=v1", "-z"],
-    { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 },
-  );
-  return stdout
-    .split("\0")
-    .filter(Boolean)
-    .map((entry) => entry.slice(3))
-    .filter(Boolean);
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)].sort();
 }
 
 function isActiveWriterConflict(message: string): boolean {

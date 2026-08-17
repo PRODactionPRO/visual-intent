@@ -11,6 +11,7 @@ import {
   type TaskStore,
 } from "@visual-intent/core";
 import {
+  ApproveDirtyBatchSchema,
   AttachExecutorSchema,
   CreateTaskSchema,
   FinishBatchSchema,
@@ -141,7 +142,12 @@ export async function handleApiRequest(
       const session = await store.getSession();
       if (batch) {
         onTaskChanged({ type: `batch.${batch.status}`, batch, session });
-        options.onBatchReady?.(batch.id);
+        if (
+          batch.status === "queued" ||
+          batch.status === "waiting_for_executor"
+        ) {
+          options.onBatchReady?.(batch.id);
+        }
       }
       json(response, 202, {
         accepted: batch?.taskIds.length ?? 0,
@@ -164,8 +170,28 @@ export async function handleApiRequest(
     }
 
     const batchActionMatch = url.pathname.match(
-      /^\/_visual-intent\/api\/batches\/([^/]+)\/(claim|finish|retry)$/,
+      /^\/_visual-intent\/api\/batches\/([^/]+)\/(approve-dirty|claim|finish|retry)$/,
     );
+    if (
+      batchActionMatch?.[1] &&
+      batchActionMatch[2] === "approve-dirty" &&
+      request.method === "POST"
+    ) {
+      const approved = await store.approveDirtyBatch(
+        decodeURIComponent(batchActionMatch[1]),
+        ApproveDirtyBatchSchema.parse(await readJson(request)),
+      );
+      onTaskChanged({ type: "batch.dirty_approval", ...approved });
+      if (
+        approved.approved &&
+        (approved.batch.status === "queued" ||
+          approved.batch.status === "waiting_for_executor")
+      ) {
+        options.onBatchReady?.(approved.batch.id);
+      }
+      json(response, 200, approved);
+      return true;
+    }
     if (
       batchActionMatch?.[1] &&
       batchActionMatch[2] === "retry" &&

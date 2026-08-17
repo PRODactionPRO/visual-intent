@@ -6,6 +6,7 @@ import {
   UpdateTaskSchema,
   type CreateTask,
   type ApplyBatch,
+  type ApproveDirtyBatch,
   type AttachExecutor,
   type BatchResult,
   type BatchStatus,
@@ -38,6 +39,10 @@ export interface TaskStore {
   getBatch(id: string): Promise<ApplyBatch | undefined>;
   dispatchReady(): Promise<ApplyBatch | undefined>;
   retryBatch(id: string): Promise<{ batch: ApplyBatch; tasks: Task[] }>;
+  approveDirtyBatch(
+    id: string,
+    input: ApproveDirtyBatch,
+  ): Promise<{ approved: boolean; batch: ApplyBatch; tasks: Task[] }>;
   claimBatch(id: string): Promise<{ batch: ApplyBatch; tasks: Task[] }>;
   finishBatch(
     id: string,

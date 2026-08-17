@@ -2,6 +2,8 @@ import { execFileSync } from "node:child_process";
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 
+import { resolveCodexThreadId } from "./session-context.mjs";
+
 const payload = await readStdin();
 const cwd = typeof payload.cwd === "string" ? payload.cwd : process.cwd();
 const repositoryRoot = await resolveRepositoryRoot(cwd);
@@ -10,9 +12,10 @@ const connection = await readConnection(repositoryRoot);
 if (!connection || connection.repositoryRoot !== repositoryRoot)
   process.exit(0);
 
-const threadId =
-  process.env.CODEX_THREAD_ID ||
-  (typeof payload.session_id === "string" ? payload.session_id : "");
+const threadId = resolveCodexThreadId({
+  explicit: process.env.CODEX_THREAD_ID ?? process.env.CODEX_SESSION_ID,
+  requestMeta: payload,
+});
 if (!threadId) process.exit(0);
 
 try {

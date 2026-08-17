@@ -24,8 +24,14 @@ function bootOverlay(): void {
     id: string;
     status: string;
     taskIds: string[];
+    workingTreeBaseline?: {
+      fingerprint: string;
+      files: Array<{ path: string; status: string }>;
+    };
     result?: {
       summary: string;
+      batchChangedFiles?: string[];
+      preExistingDirtyFiles?: string[];
       technicalDetails?: string;
       retryable?: boolean;
       failureCode?: string;
@@ -87,6 +93,9 @@ function bootOverlay(): void {
       .vip-last-batch pre { max-height: 180px; overflow: auto; margin: 6px 0 0; padding: 7px; border-radius: 7px; background: rgba(15,23,42,.72); color: #cbd5e1; font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
       .vip-retry { width: 100%; margin: -2px 0 10px; }
       .vip-retry[hidden] { display: none; }
+      .vip-approve-dirty { width: 100%; margin: -2px 0 10px; color: #422006; background: #fbbf24; }
+      .vip-approve-dirty:hover:not(:disabled) { color: #422006; background: #fde68a; }
+      .vip-approve-dirty[hidden] { display: none; }
       .vip-count { display: inline-grid; min-width: 22px; height: 22px; place-items: center; padding: 0 6px; border-radius: 999px; background: #334155; color: white; font-size: 11px; }
       .vip-task { padding: 10px; border: 1px solid #334155; border-radius: 10px; margin-top: 8px; background: rgba(30,41,59,.8); }
       .vip-task-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -123,6 +132,7 @@ function bootOverlay(): void {
           <span class="vip-runtime-executor">disconnected</span>
         </div>
         <div class="vip-last-batch" hidden></div>
+        <button class="vip-approve-dirty" hidden>Продолжить поверх текущих изменений</button>
         <button class="vip-primary vip-retry" hidden>Retry batch</button>
         <div class="vip-task-list"></div>
       </section>
@@ -163,6 +173,7 @@ function bootOverlay(): void {
   const runtimeProject = required<HTMLElement>(".vip-runtime-project");
   const runtimeExecutor = required<HTMLElement>(".vip-runtime-executor");
   const lastBatch = required<HTMLElement>(".vip-last-batch");
+  const approveDirtyButton = required<HTMLButtonElement>(".vip-approve-dirty");
   const retryButton = required<HTMLButtonElement>(".vip-retry");
   const toastElement = required<HTMLElement>(".vip-toast");
 
@@ -600,6 +611,9 @@ function bootOverlay(): void {
       const batch = batches[0];
       if (!batch) {
         lastBatch.hidden = true;
+        approveDirtyButton.hidden = true;
+        delete approveDirtyButton.dataset.batchId;
+        delete approveDirtyButton.dataset.baselineFingerprint;
         retryButton.hidden = true;
         delete retryButton.dataset.batchId;
         return;
@@ -626,6 +640,34 @@ function bootOverlay(): void {
             ? "Ожидает обработки подключённой задачей Codex."
             : (batch.result?.summary ?? "");
       lastBatch.replaceChildren(title, copy);
+      const dirtyApprovalRequired =
+        batch.status === "needs_input" &&
+        batch.result?.failureCode === "dirty_worktree_approval_required";
+      const preExistingDirtyFiles =
+        batch.result?.preExistingDirtyFiles ??
+        batch.workingTreeBaseline?.files.map((file) => file.path) ??
+        [];
+      if (preExistingDirtyFiles.length > 0) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = dirtyApprovalRequired
+          ? `Уже изменённые файлы · ${preExistingDirtyFiles.length}`
+          : `Изменения до Apply · ${preExistingDirtyFiles.length}`;
+        const pre = document.createElement("pre");
+        pre.textContent = preExistingDirtyFiles.join("\n");
+        details.append(summary, pre);
+        lastBatch.append(details);
+      }
+      const batchChangedFiles = batch.result?.batchChangedFiles ?? [];
+      if (batchChangedFiles.length > 0) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `Изменено этим Apply · ${batchChangedFiles.length}`;
+        const pre = document.createElement("pre");
+        pre.textContent = batchChangedFiles.join("\n");
+        details.append(summary, pre);
+        lastBatch.append(details);
+      }
       const technicalDetails = batch.result?.technicalDetails;
       if (technicalDetails) {
         const details = document.createElement("details");
@@ -642,11 +684,20 @@ function bootOverlay(): void {
           batch.result?.technicalDetails ?? batch.result?.summary ?? "",
         );
       const retryable =
-        batch.status === "needs_input" ||
+        (batch.status === "needs_input" && !dirtyApprovalRequired) ||
         (batch.status === "failed" &&
           (batch.result?.retryable === true || knownActiveWriter));
       retryButton.hidden = !retryable;
       retryButton.dataset.batchId = batch.id;
+      const baselineFingerprint = batch.workingTreeBaseline?.fingerprint;
+      approveDirtyButton.hidden =
+        !dirtyApprovalRequired || !baselineFingerprint;
+      approveDirtyButton.dataset.batchId = batch.id;
+      if (baselineFingerprint) {
+        approveDirtyButton.dataset.baselineFingerprint = baselineFingerprint;
+      } else {
+        delete approveDirtyButton.dataset.baselineFingerprint;
+      }
     } catch {
       runtime.dataset.connected = "false";
       runtimeProject.textContent = "Visual Intent unavailable";
@@ -823,10 +874,13 @@ function bootOverlay(): void {
       panel.dataset.open = "true";
       await Promise.all([loadTasks(), loadRuntime()]);
       const waiting = result.batch?.status === "waiting_for_executor";
+      const needsDirtyApproval = result.batch?.status === "needs_input";
       showToast(
-        waiting
-          ? `Ожидает обработки подключённой задачей Codex · ${result.accepted}`
-          : `${result.accepted} task${result.accepted === 1 ? "" : "s"} sent to ${result.session?.displayName ?? "Codex"}`,
+        needsDirtyApproval
+          ? "Пакет сохранён. Проверьте текущие изменения и подтвердите продолжение."
+          : waiting
+            ? `Ожидает обработки подключённой задачей Codex · ${result.accepted}`
+            : `${result.accepted} task${result.accepted === 1 ? "" : "s"} sent to ${result.session?.displayName ?? "Codex"}`,
       );
     } catch (error) {
       showToast(`Could not apply tasks: ${String(error)}`);
@@ -858,6 +912,44 @@ function bootOverlay(): void {
     }
   }
 
+  async function approveDirtyBatch(): Promise<void> {
+    const batchId = approveDirtyButton.dataset.batchId;
+    const expectedBaselineFingerprint =
+      approveDirtyButton.dataset.baselineFingerprint;
+    if (!batchId || !expectedBaselineFingerprint) return;
+    approveDirtyButton.disabled = true;
+    try {
+      const response = await apiFetch(
+        `${apiBase}/batches/${encodeURIComponent(batchId)}/approve-dirty`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            expectedBaselineFingerprint,
+            source: "overlay",
+          }),
+        },
+      );
+      if (!response.ok) throw await responseError(response);
+      const result = (await response.json()) as {
+        approved: boolean;
+        batch: OverlayBatch;
+      };
+      await Promise.all([loadTasks(), loadRuntime()]);
+      showToast(
+        result.approved
+          ? result.batch.status === "waiting_for_executor"
+            ? "Подтверждено. Пакет ожидает подключённую задачу Codex."
+            : "Подтверждено. Пакет снова поставлен в очередь."
+          : "Рабочие файлы изменились. Проверьте обновлённый список ещё раз.",
+      );
+    } catch (error) {
+      showToast(`Не удалось подтвердить продолжение: ${String(error)}`);
+    } finally {
+      approveDirtyButton.disabled = false;
+    }
+  }
+
   required<HTMLButtonElement>("[data-action='select']").addEventListener(
     "click",
     () => toggleMode("select"),
@@ -878,6 +970,7 @@ function bootOverlay(): void {
     },
   );
   applyButton.addEventListener("click", () => void applyTasks());
+  approveDirtyButton.addEventListener("click", () => void approveDirtyBatch());
   retryButton.addEventListener("click", () => void retryBatch());
   required<HTMLButtonElement>(
     "[data-composer-action='close']",

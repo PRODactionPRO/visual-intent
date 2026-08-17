@@ -6,7 +6,10 @@ import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { FileTaskStore } from "@visual-intent/file-store";
+import {
+  FileTaskStore,
+  captureGitWorkingTreeBaseline,
+} from "@visual-intent/file-store";
 import type { CreateTask } from "@visual-intent/protocol";
 
 import {
@@ -57,7 +60,10 @@ async function createBatch(
   await mkdir(repositoryRoot);
   await execFileAsync("git", ["init", "--quiet", repositoryRoot]);
   const repository = { root: repositoryRoot, name: "repository" };
-  const store = new FileTaskStore(join(directory, "tasks.json"), repository);
+  const store = new FileTaskStore(join(directory, "tasks.json"), repository, {
+    captureWorkingTreeBaseline: () =>
+      captureGitWorkingTreeBaseline(repositoryRoot),
+  });
   await store.configureSession({
     projectKey: "example",
     displayName: "Example",

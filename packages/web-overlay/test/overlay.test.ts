@@ -18,6 +18,10 @@ describe("createOverlayScript", () => {
     );
     expect(script).toContain("Technical details");
     expect(script).toContain("batch.result?.retryable === true");
+    expect(script).toContain("dirty_worktree_approval_required");
+    expect(script).toContain("approve-dirty");
+    expect(script).toContain("Продолжить поверх текущих изменений");
+    expect(script).toContain("Изменено этим Apply");
     expect(script).toContain("readyTasks.length === 0");
     expect(script).not.toContain("import ");
   });

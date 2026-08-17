@@ -144,29 +144,40 @@ stateDiagram-v2
 
 `ProjectSession.repository` принадлежит серверу. `AttachExecutor.repositoryRoot` должен точно совпасть с ним до принятия ID задачи Codex. `ProjectExecutor.ownership` явно принимает `host-attached` или `visual-intent-owned`. ID host-задачи используется только как адрес handoff и никогда не передаётся в Codex SDK; SDK может получить только ID собственного worker. Пакет сохраняет снимок ownership и ID, чтобы маршрутизацию можно было проверить после Apply.
 
+`ApplyBatch.workingTreeBaseline` хранит отпечаток незакоммиченного рабочего дерева: время снимка, общий fingerprint и список файлов с Git-статусом и fingerprint содержимого. Служебная `.visual-intent/` не входит в снимок. Если список непустой, пакет переходит в `needs_input` до явного `dirtyWorktreeApproval`, привязанного к fingerprint. Изменение хотя бы одного файла инвалидирует старое подтверждение.
+
+После `finish` результат различает:
+
+- `preExistingDirtyFiles` — файлы, уже изменённые на момент claim;
+- `batchChangedFiles` — файлы, состояние которых изменилось относительно baseline;
+- `changedFiles` — совместимое поле, которое в daemon равно `batchChangedFiles`.
+
+Обычный `retry` не подтверждает работу поверх сохранившихся изменений. Он разрешён без подтверждения только после очистки рабочего дерева. Подтверждение выполняется отдельной операцией, чтобы согласие нельзя было вывести из клика по общей кнопке повтора.
+
 Apply идемпотентен относительно готовой очереди: после первого вызова задачи уже имеют `batchId`, поэтому повторный вызов не создаёт копию. Claim атомарен, finish принимается только для `in_progress`, а повтор `failed` разрешён только для структурированно помеченной исправимой причины. Известный legacy-конфликт `active writer` мигрируется в такую исправимую причину без изменения исходных `taskIds`.
 
 Обновление задачи может содержать `expectedRevision`. При каждом принятом обновлении store увеличивает ревизию и отклоняет устаревшее ожидаемое значение через HTTP `409` или ошибку MCP-инструмента.
 
 ## HTTP API
 
-| Метод    | Путь                                     | Назначение                                     |
-| -------- | ---------------------------------------- | ---------------------------------------------- |
-| `GET`    | `/_visual-intent/api/health`             | готовность локального процесса и сессии        |
-| `GET`    | `/_visual-intent/api/session`            | привязка проекта и исполнителя                 |
-| `POST`   | `/_visual-intent/api/session/attach`     | подключить точный репозиторий и задачу Codex   |
-| `GET`    | `/_visual-intent/api/tasks`              | показать задачи, начиная с недавно обновлённых |
-| `GET`    | `/_visual-intent/api/tasks?status=ready` | отфильтрованный список                         |
-| `GET`    | `/_visual-intent/api/tasks/:id`          | полная задача                                  |
-| `POST`   | `/_visual-intent/api/tasks`              | проверить и создать задачу `ready`             |
-| `PATCH`  | `/_visual-intent/api/tasks/:id`          | обновить инструкцию, статус или результат      |
-| `DELETE` | `/_visual-intent/api/tasks/:id`          | удалить задачу `ready`                         |
-| `POST`   | `/_visual-intent/api/tasks/apply`        | создать пакет из всех задач `ready`            |
-| `GET`    | `/_visual-intent/api/batches`            | показать сохранённые Apply-пакеты              |
-| `GET`    | `/_visual-intent/api/batches/:id`        | получить один пакет                            |
-| `POST`   | `/_visual-intent/api/batches/:id/claim`  | забрать ожидающий или `queued` пакет в работу  |
-| `POST`   | `/_visual-intent/api/batches/:id/finish` | сохранить завершение, вопрос или ошибку        |
-| `POST`   | `/_visual-intent/api/batches/:id/retry`  | повторить пакет `needs_input` или `failed`     |
+| Метод    | Путь                                            | Назначение                                     |
+| -------- | ----------------------------------------------- | ---------------------------------------------- |
+| `GET`    | `/_visual-intent/api/health`                    | готовность локального процесса и сессии        |
+| `GET`    | `/_visual-intent/api/session`                   | привязка проекта и исполнителя                 |
+| `POST`   | `/_visual-intent/api/session/attach`            | подключить точный репозиторий и задачу Codex   |
+| `GET`    | `/_visual-intent/api/tasks`                     | показать задачи, начиная с недавно обновлённых |
+| `GET`    | `/_visual-intent/api/tasks?status=ready`        | отфильтрованный список                         |
+| `GET`    | `/_visual-intent/api/tasks/:id`                 | полная задача                                  |
+| `POST`   | `/_visual-intent/api/tasks`                     | проверить и создать задачу `ready`             |
+| `PATCH`  | `/_visual-intent/api/tasks/:id`                 | обновить инструкцию, статус или результат      |
+| `DELETE` | `/_visual-intent/api/tasks/:id`                 | удалить задачу `ready`                         |
+| `POST`   | `/_visual-intent/api/tasks/apply`               | создать пакет из всех задач `ready`            |
+| `GET`    | `/_visual-intent/api/batches`                   | показать сохранённые Apply-пакеты              |
+| `GET`    | `/_visual-intent/api/batches/:id`               | получить один пакет                            |
+| `POST`   | `/_visual-intent/api/batches/:id/claim`         | забрать ожидающий или `queued` пакет в работу  |
+| `POST`   | `/_visual-intent/api/batches/:id/finish`        | сохранить завершение, вопрос или ошибку        |
+| `POST`   | `/_visual-intent/api/batches/:id/retry`         | повторить пакет `needs_input` или `failed`     |
+| `POST`   | `/_visual-intent/api/batches/:id/approve-dirty` | подтвердить точный dirty-baseline пакета       |
 
 Запросы на создание не содержат серверные поля задачи: `id`, `status`, `revision`, `createdAt` и `updatedAt`.
 
@@ -199,7 +210,7 @@ Apply идемпотентен относительно готовой очер�
 
 ## MCP-мост
 
-Совместимый stdio-сервер предоставляет `visual_intent_list_tasks`, `visual_intent_list_batches`, `visual_intent_retry_batch`, `visual_intent_claim_batch`, `visual_intent_get_task`, `visual_intent_finish_batch` и `visual_intent_update_task`. Плагин Codex добавляет подключение сессии через daemon и те же операции над задачами и пакетами. Получение пакета атомарно переводит сам пакет и все его задачи в `in_progress`.
+Совместимый stdio-сервер предоставляет `visual_intent_list_tasks`, `visual_intent_list_batches`, `visual_intent_retry_batch`, `visual_intent_approve_dirty_batch`, `visual_intent_claim_batch`, `visual_intent_get_task`, `visual_intent_finish_batch` и `visual_intent_update_task`. Плагин Codex добавляет подключение сессии через daemon и те же операции над задачами и пакетами. Получение пакета атомарно переводит сам пакет и все его задачи в `in_progress`. Инструмент подтверждения dirty-baseline можно вызывать только после явного согласия пользователя.
 
 MCP — transport adapter, а не часть domain model. Агент может использовать возвращённые selector и region как свидетельство, но до изменения кода должен изучить актуальные исходники и runtime, потому что runtime selectors могут устареть.
 

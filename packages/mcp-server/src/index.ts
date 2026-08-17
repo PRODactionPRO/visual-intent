@@ -78,6 +78,30 @@ export function createMcpServer(store: TaskStore): McpServer {
   );
 
   server.registerTool(
+    "visual_intent_approve_dirty_batch",
+    {
+      description:
+        "Approve one needs-input Apply batch to continue over the exact dirty-worktree baseline shown to the user. Use only after explicit user approval.",
+      inputSchema: {
+        id: z.string().min(1),
+        expectedBaselineFingerprint: z.string().min(1),
+      },
+    },
+    async ({ id, expectedBaselineFingerprint }) => {
+      try {
+        return text(
+          await store.approveDirtyBatch(id, {
+            expectedBaselineFingerprint,
+            source: "mcp",
+          }),
+        );
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "visual_intent_claim_batch",
     {
       description:

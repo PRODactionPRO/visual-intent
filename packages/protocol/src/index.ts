@@ -109,9 +109,35 @@ export const RepositorySchema = z.object({
   name: z.string().min(1),
 });
 
+export const WorkingTreeFileSchema = z.object({
+  path: z.string().min(1),
+  status: z.string().min(1),
+  fingerprint: z.string().min(1),
+});
+
+export const WorkingTreeBaselineSchema = z.object({
+  capturedAt: timestamp,
+  fingerprint: z.string().min(1),
+  files: z.array(WorkingTreeFileSchema).default([]),
+});
+
+export const DirtyWorktreeApprovalSourceSchema = z.enum([
+  "overlay",
+  "cli",
+  "mcp",
+]);
+
+export const DirtyWorktreeApprovalSchema = z.object({
+  approvedAt: timestamp,
+  baselineFingerprint: z.string().min(1),
+  source: DirtyWorktreeApprovalSourceSchema,
+});
+
 export const TaskResultSchema = z.object({
   summary: z.string().min(1),
   changedFiles: z.array(z.string()).default([]),
+  batchChangedFiles: z.array(z.string()).optional(),
+  preExistingDirtyFiles: z.array(z.string()).optional(),
   notes: z.array(z.string()).default([]),
 });
 
@@ -202,6 +228,8 @@ export const BatchStatusSchema = z.enum([
 export const BatchResultSchema = z.object({
   summary: z.string().min(1),
   changedFiles: z.array(z.string()).default([]),
+  batchChangedFiles: z.array(z.string()).optional(),
+  preExistingDirtyFiles: z.array(z.string()).optional(),
   notes: z.array(z.string()).default([]),
   technicalDetails: z.string().min(1).optional(),
   retryable: z.boolean().optional(),
@@ -219,7 +247,14 @@ export const ApplyBatchSchema = z.object({
   updatedAt: timestamp,
   startedAt: timestamp.optional(),
   completedAt: timestamp.optional(),
+  workingTreeBaseline: WorkingTreeBaselineSchema.optional(),
+  dirtyWorktreeApproval: DirtyWorktreeApprovalSchema.optional(),
   result: BatchResultSchema.optional(),
+});
+
+export const ApproveDirtyBatchSchema = z.object({
+  expectedBaselineFingerprint: z.string().min(1),
+  source: DirtyWorktreeApprovalSourceSchema.default("overlay"),
 });
 
 export const FinishBatchSchema = z.object({
@@ -254,6 +289,12 @@ export type Annotation = z.infer<typeof AnnotationSchema>;
 export type Intent = z.infer<typeof IntentSchema>;
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type Repository = z.infer<typeof RepositorySchema>;
+export type WorkingTreeFile = z.infer<typeof WorkingTreeFileSchema>;
+export type WorkingTreeBaseline = z.infer<typeof WorkingTreeBaselineSchema>;
+export type DirtyWorktreeApprovalSource = z.infer<
+  typeof DirtyWorktreeApprovalSourceSchema
+>;
+export type DirtyWorktreeApproval = z.infer<typeof DirtyWorktreeApprovalSchema>;
 export type TaskResult = z.infer<typeof TaskResultSchema>;
 export type CreateTask = z.infer<typeof CreateTaskSchema>;
 export type Task = z.infer<typeof TaskSchema>;
@@ -270,4 +311,5 @@ export type AttachExecutor = z.input<typeof AttachExecutorSchema>;
 export type BatchStatus = z.infer<typeof BatchStatusSchema>;
 export type BatchResult = z.infer<typeof BatchResultSchema>;
 export type ApplyBatch = z.infer<typeof ApplyBatchSchema>;
+export type ApproveDirtyBatch = z.input<typeof ApproveDirtyBatchSchema>;
 export type FinishBatch = z.infer<typeof FinishBatchSchema>;

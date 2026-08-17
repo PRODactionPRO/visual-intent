@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { CreateTask } from "@visual-intent/protocol";
 
-import { FileTaskStore } from "../src/index.js";
+import { FileTaskStore, captureGitWorkingTreeBaseline } from "../src/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -313,5 +313,90 @@ describe("FileTaskStore", () => {
         source: "plugin",
       }),
     ).rejects.toThrow("repository mismatch");
+  });
+
+  it("requires exact dirty-worktree approval and separates Apply changes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-baseline-"));
+    temporaryDirectories.push(directory);
+    const repositoryRoot = join(directory, "repository");
+    await mkdir(repositoryRoot);
+    const { execFile } = await import("node:child_process");
+    await new Promise<void>((resolve, reject) =>
+      execFile("git", ["init", "--quiet", repositoryRoot], (error) =>
+        error ? reject(error) : resolve(),
+      ),
+    );
+    await writeFile(join(repositoryRoot, "existing-change.txt"), "before\n");
+    const repository = { root: repositoryRoot, name: "repository" };
+    const store = new FileTaskStore(
+      join(repositoryRoot, ".visual-intent", "tasks.json"),
+      repository,
+      {
+        captureWorkingTreeBaseline: () =>
+          captureGitWorkingTreeBaseline(repositoryRoot),
+      },
+    );
+    await store.configureSession({
+      projectKey: "baseline",
+      displayName: "Baseline",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+    await store.create(input);
+
+    const blocked = await store.dispatchReady();
+    if (!blocked?.workingTreeBaseline) throw new Error("Expected baseline");
+    expect(blocked.status).toBe("needs_input");
+    expect(blocked.result).toEqual(
+      expect.objectContaining({
+        failureCode: "dirty_worktree_approval_required",
+        preExistingDirtyFiles: ["existing-change.txt"],
+      }),
+    );
+    await expect(store.retryBatch(blocked.id)).rejects.toThrow(
+      "without resolving or approving",
+    );
+
+    const staleFingerprint = blocked.workingTreeBaseline.fingerprint;
+    await writeFile(join(repositoryRoot, "existing-change.txt"), "changed\n");
+    const staleApproval = await store.approveDirtyBatch(blocked.id, {
+      expectedBaselineFingerprint: staleFingerprint,
+      source: "overlay",
+    });
+    expect(staleApproval.approved).toBe(false);
+    expect(staleApproval.batch.workingTreeBaseline?.fingerprint).not.toBe(
+      staleFingerprint,
+    );
+
+    const approved = await store.approveDirtyBatch(blocked.id, {
+      expectedBaselineFingerprint:
+        staleApproval.batch.workingTreeBaseline?.fingerprint ?? "missing",
+      source: "overlay",
+    });
+    expect(approved.approved).toBe(true);
+    expect(approved.batch.status).toBe("waiting_for_executor");
+
+    const claimed = await store.claimBatch(blocked.id);
+    expect(claimed.batch.status).toBe("in_progress");
+    await writeFile(join(repositoryRoot, "existing-change.txt"), "after\n");
+    await writeFile(join(repositoryRoot, "apply-change.txt"), "created\n");
+    const finished = await store.finishBatch(blocked.id, "completed", {
+      summary: "Implemented",
+      changedFiles: ["incorrect-old-file.txt"],
+      notes: [],
+    });
+
+    expect(finished.batch.result?.preExistingDirtyFiles).toEqual([
+      "existing-change.txt",
+    ]);
+    expect(finished.batch.result?.batchChangedFiles).toEqual([
+      "apply-change.txt",
+      "existing-change.txt",
+    ]);
+    expect(finished.batch.result?.changedFiles).toEqual([
+      "apply-change.txt",
+      "existing-change.txt",
+    ]);
   });
 });

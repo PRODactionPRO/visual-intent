@@ -2,6 +2,8 @@ import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 
+import { resolveCodexThreadId } from "./session-context.mjs";
+
 let connection;
 
 const tools = [
@@ -66,6 +68,20 @@ const tools = [
       type: "object",
       properties: { id: { type: "string" } },
       required: ["id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "visual_intent_approve_dirty_batch",
+    description:
+      "Continue one needs-input Apply batch over the exact dirty-worktree baseline shown to the user. Use only after explicit user approval.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        expectedBaselineFingerprint: { type: "string" },
+      },
+      required: ["id", "expectedBaselineFingerprint"],
       additionalProperties: false,
     },
   },
@@ -139,17 +155,21 @@ async function handleRequest(request) {
   if (request.method === "ping") return {};
   if (request.method === "tools/list") return { tools };
   if (request.method === "tools/call") {
-    return callTool(request.params?.name, request.params?.arguments ?? {});
+    return callTool(
+      request.params?.name,
+      request.params?.arguments ?? {},
+      request.params?._meta,
+    );
   }
   throw new Error(`Unsupported MCP method ${request.method}`);
 }
 
-async function callTool(name, input) {
+async function callTool(name, input, requestMeta) {
   try {
     let value;
     switch (name) {
       case "visual_intent_attach_project":
-        value = await attachProject(input);
+        value = await attachProject(input, requestMeta);
         break;
       case "visual_intent_get_session":
         value = await api("/session");
@@ -169,6 +189,18 @@ async function callTool(name, input) {
         value = await api(`/batches/${encodeURIComponent(input.id)}/retry`, {
           method: "POST",
         });
+        break;
+      case "visual_intent_approve_dirty_batch":
+        value = await api(
+          `/batches/${encodeURIComponent(input.id)}/approve-dirty`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              expectedBaselineFingerprint: input.expectedBaselineFingerprint,
+              source: "mcp",
+            }),
+          },
+        );
         break;
       case "visual_intent_claim_batch":
         value = await api(`/batches/${encodeURIComponent(input.id)}/claim`, {
@@ -205,7 +237,7 @@ async function callTool(name, input) {
   }
 }
 
-async function attachProject(input) {
+async function attachProject(input, requestMeta) {
   const repositoryRoot = await realpath(input.repositoryRoot);
   const candidate = JSON.parse(
     await readFile(
@@ -219,9 +251,14 @@ async function attachProject(input) {
     );
   }
   connection = candidate;
-  const threadId = input.threadId || process.env.CODEX_THREAD_ID;
+  const threadId = resolveCodexThreadId({
+    explicit: input.threadId,
+    requestMeta,
+  });
   if (!threadId) {
-    throw new Error("CODEX_THREAD_ID is unavailable; pass threadId explicitly");
+    throw new Error(
+      "Codex task id is unavailable in the MCP context; pass threadId explicitly",
+    );
   }
   return api("/session/attach", {
     method: "POST",

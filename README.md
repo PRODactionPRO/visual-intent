@@ -11,6 +11,8 @@ Visual Intent — локальный мост визуальной обратн�
 - структурированные platform-neutral сущности `Surface`, `Node`, `Region`, `Frame`, `Relation`, `Annotation`, `Intent` и `Task`;
 - файловое JSON-хранилище с атомарной записью, краткоживущей файловой блокировкой и проверкой конфликтов ревизий;
 - проектные сессии, привязанные к репозиторию, и надёжно сохраняемые Apply-пакеты;
+- Git-baseline каждого Apply: отдельные списки существовавших заранее изменений и файлов, изменённых самим пакетом;
+- явное подтверждение в Tasks перед работой поверх незакоммиченных изменений;
 - локальный HTTP API, защищённые токеном операции изменения и WebSocket-уведомления;
 - явное разделение подключённой задачи Codex и автономного исполнителя на базе Codex SDK;
 - MCP-инструменты для безопасного получения и завершения пакетов проектной задачей Codex;
@@ -83,7 +85,7 @@ node /absolute/path/to/visual-intent/apps/cli/dist/index.js attach \
   --repo /absolute/path/to/your-project
 ```
 
-Внутри Codex переменная `CODEX_THREAD_ID` предоставляет идентификатор текущей задачи. Перед подключением daemon проверяет канонический путь к репозиторию. В панели Tasks статус меняется с `disconnected` на `Codex · connected`. Следующий Apply сохраняет пакет со статусом `Waiting for Codex`, но не запускает второй процесс и не пишет в Thread Store. Текущая задача получает пакет через `visual_intent_list_batches` и `visual_intent_claim_batch` после следующего обращения пользователя. Автоматическое пробуждение уже открытой задачи из standalone-daemon пока не используется: для него нет поддерживаемого публичного transport-контракта.
+Плагин ищет идентификатор текущей задачи в метаданных MCP, затем в `CODEX_THREAD_ID` и `CODEX_SESSION_ID`. Если host не передал ни один из этих источников, остаётся безопасный явный параметр `threadId`; плагин не выбирает «последнюю активную» задачу по догадке. Перед подключением daemon проверяет канонический путь к репозиторию. В панели Tasks статус меняется с `disconnected` на `Codex · connected`. Следующий Apply сохраняет пакет со статусом `Waiting for Codex`, но не запускает второй процесс и не пишет в Thread Store. Текущая задача получает пакет через `visual_intent_list_batches` и `visual_intent_claim_batch` после следующего обращения пользователя. Автоматическое пробуждение уже открытой задачи из standalone-daemon пока не используется.
 
 Если предпочтительнее отдельная автоматически созданная задача Codex, запустите proxy так:
 
@@ -96,7 +98,9 @@ pnpm vip -- start \
   --executor isolated-worker
 ```
 
-Первый Apply создаёт отдельную SDK-задачу, которой владеет Visual Intent, а последующие пакеты возобновляют только её. При необходимости можно явно передать ранее созданный Visual Intent worker через `--worker-thread <id>`; ID подключённой задачи Desktop сюда передавать нельзя. По умолчанию dispatcher отказывается изменять репозиторий, если в нём уже есть незакоммиченные изменения. Флаг `--allow-dirty` предназначен только для осознанного и предварительно проверенного исключения.
+Первый Apply создаёт отдельную SDK-задачу, которой владеет Visual Intent, а последующие пакеты возобновляют только её. При необходимости можно явно передать ранее созданный Visual Intent worker через `--worker-thread <id>`; ID подключённой задачи Desktop сюда передавать нельзя.
+
+Git-baseline снимается при каждом Apply независимо от выбранной политики. По умолчанию подключённая `host-attached` задача Codex получает пакет сразу: агент видит исходное рабочее дерево, сохраняет чужие изменения и запрашивает уточнение только при реальном конфликте. В меню **«Настройки → Работа с изменениями»** можно вернуть режим **«Спрашивать подтверждение»**; тогда dirty-пакет сохраняется как `needs_input`, а подтверждение действует только для показанного fingerprint. Автономный `visual-intent-owned` worker всегда требует такое подтверждение. После выполнения `preExistingDirtyFiles` остаётся исходным контекстом, а `batchChangedFiles` и совместимое поле `changedFiles` содержат только изменения относительно baseline. Флаг `--allow-dirty` остаётся явным CLI-исключением для контролируемой локальной автоматизации.
 
 ### Плагин Codex
 
@@ -130,7 +134,9 @@ codex plugin add visual-intent@personal
         "/absolute/path/to/visual-intent/apps/cli/dist/index.js",
         "mcp",
         "--store",
-        "/absolute/path/to/your-project/.visual-intent/tasks.json"
+        "/absolute/path/to/your-project/.visual-intent/tasks.json",
+        "--repo",
+        "/absolute/path/to/your-project"
       ]
     }
   }
@@ -146,15 +152,18 @@ args = [
   "/absolute/path/to/visual-intent/apps/cli/dist/index.js",
   "mcp",
   "--store",
-  "/absolute/path/to/your-project/.visual-intent/tasks.json"
+  "/absolute/path/to/your-project/.visual-intent/tasks.json",
+  "--repo",
+  "/absolute/path/to/your-project"
 ]
 ```
 
-Файловый мост совместимости предоставляет семь инструментов:
+Параметр `--repo` даёт файловому мосту возможность проверять Git-baseline; без него операции чтения остаются совместимыми, но подтверждение dirty-worktree безопасно отклоняется. Файловый мост предоставляет восемь инструментов:
 
 - `visual_intent_list_tasks` — показать все задачи или отфильтровать их по статусу;
 - `visual_intent_list_batches` — показать Apply-пакеты и их статусы;
 - `visual_intent_retry_batch` — повторно запустить заблокированный или неудачный пакет после устранения причины;
+- `visual_intent_approve_dirty_batch` — после явного согласия пользователя подтвердить точный dirty-baseline одного пакета;
 - `visual_intent_claim_batch` — атомарно забрать один пакет из очереди и перевести его в `in_progress`;
 - `visual_intent_get_task` — получить полный визуальный контекст и данные ревизии;
 - `visual_intent_finish_batch` — сохранить результат реализации всего пакета;
@@ -179,6 +188,7 @@ GET   /_visual-intent/api/batches/:id
 POST  /_visual-intent/api/batches/:id/claim
 POST  /_visual-intent/api/batches/:id/finish
 POST  /_visual-intent/api/batches/:id/retry
+POST  /_visual-intent/api/batches/:id/approve-dirty
 WS    /_visual-intent/ws
 ```
 
@@ -226,10 +236,11 @@ docs/
   ARCHITECTURE.md
   PROTOCOL.md
   PLATFORM-ROADMAP.md
+  INTERFACE-BRIEF.md
   FUTURE-MEDIA-AND-USAGE.md
 ```
 
-Подробности: [продукт](docs/PRODUCT.md), [архитектура](docs/ARCHITECTURE.md), [протокол](docs/PROTOCOL.md), [платформенный roadmap](docs/PLATFORM-ROADMAP.md) и дискуссионный документ о [будущей работе с медиа, хранением и стоимостью](docs/FUTURE-MEDIA-AND-USAGE.md).
+Подробности: [продукт](docs/PRODUCT.md), [архитектура](docs/ARCHITECTURE.md), [протокол](docs/PROTOCOL.md), [платформенный roadmap](docs/PLATFORM-ROADMAP.md), [интерфейсный brief](docs/INTERFACE-BRIEF.md) и дискуссионный документ о [будущей работе с медиа, хранением и стоимостью](docs/FUTURE-MEDIA-AND-USAGE.md).
 
 ## Лицензия
 

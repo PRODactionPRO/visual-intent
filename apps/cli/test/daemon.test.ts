@@ -28,6 +28,16 @@ const store: TaskStore = {
   async delete() {
     throw new Error("not used");
   },
+  async getSettings() {
+    return {
+      dirtyWorktreePolicy: "allow-host-attached",
+      revision: 1,
+      updatedAt: "2026-08-19T00:00:00.000Z",
+    };
+  },
+  async updateSettings() {
+    throw new Error("not used");
+  },
   async getSession() {
     return undefined;
   },
@@ -52,6 +62,9 @@ const store: TaskStore = {
   async retryBatch() {
     throw new Error("not used");
   },
+  async approveDirtyBatch() {
+    throw new Error("not used");
+  },
   async claimBatch() {
     throw new Error("not used");
   },
@@ -69,9 +82,11 @@ afterEach(async () => {
 
 describe("local daemon", () => {
   it("injects the overlay before the closing body", () => {
-    expect(injectOverlayTag("<html><body>Demo</body></html>")).toContain(
+    const html = injectOverlayTag("<html><body>Demo</body></html>");
+    expect(html).toContain(
       '<script src="/_visual-intent/overlay.js" data-visual-intent></script></body>',
     );
+    expect(html).toContain("/_visual-intent/vendor/html2canvas.js");
   });
 
   it("rejects a remote target", () => {

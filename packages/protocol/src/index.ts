@@ -90,8 +90,23 @@ export const AnnotationSchema = z.object({
 export const IntentSchema = z.object({
   id,
   action: z.enum(["change", "review", "question", "bug"]),
-  instruction: z.string().min(1),
+  instruction: z.string(),
   acceptanceCriteria: z.array(z.string().min(1)).default([]),
+});
+
+export const TaskKindSchema = z.enum(["code-change", "figma-component"]);
+
+export const AttachmentSchema = z.object({
+  id,
+  kind: z.enum(["screenshot", "file"]),
+  mimeType: z.string().min(1),
+  fileName: z.string().min(1),
+  byteSize: z.number().int().nonnegative(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+  path: z.string().min(1),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  createdAt: timestamp,
 });
 
 export const TaskStatusSchema = z.enum([
@@ -109,24 +124,73 @@ export const RepositorySchema = z.object({
   name: z.string().min(1),
 });
 
+export const WorkingTreeFileSchema = z.object({
+  path: z.string().min(1),
+  status: z.string().min(1),
+  fingerprint: z.string().min(1),
+});
+
+export const WorkingTreeBaselineSchema = z.object({
+  capturedAt: timestamp,
+  fingerprint: z.string().min(1),
+  files: z.array(WorkingTreeFileSchema).default([]),
+});
+
+export const DirtyWorktreeApprovalSourceSchema = z.enum([
+  "overlay",
+  "cli",
+  "mcp",
+  "project-settings",
+]);
+
+export const DirtyWorktreeApprovalSchema = z.object({
+  approvedAt: timestamp,
+  baselineFingerprint: z.string().min(1),
+  source: DirtyWorktreeApprovalSourceSchema,
+});
+
 export const TaskResultSchema = z.object({
   summary: z.string().min(1),
   changedFiles: z.array(z.string()).default([]),
+  batchChangedFiles: z.array(z.string()).optional(),
+  preExistingDirtyFiles: z.array(z.string()).optional(),
   notes: z.array(z.string()).default([]),
 });
 
-export const CreateTaskSchema = z.object({
+const CreateTaskFieldsSchema = z.object({
   protocolVersion: z.literal(PROTOCOL_VERSION),
+  kind: TaskKindSchema.default("code-change"),
   surface: SurfaceSchema,
   nodes: z.array(NodeSchema).default([]),
   regions: z.array(RegionSchema).default([]),
   frames: z.array(FrameSchema).default([]),
   relations: z.array(RelationSchema).default([]),
   annotations: z.array(AnnotationSchema).default([]),
+  attachments: z.array(AttachmentSchema).max(3).default([]),
   intent: IntentSchema,
 });
 
-export const TaskSchema = CreateTaskSchema.extend({
+function requireCodeChangeInstruction(
+  value: z.infer<typeof CreateTaskFieldsSchema>,
+  context: z.RefinementCtx,
+): void {
+  if (
+    value.kind === "code-change" &&
+    value.intent.instruction.trim().length === 0
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["intent", "instruction"],
+      message: "A code-change task requires an instruction",
+    });
+  }
+}
+
+export const CreateTaskSchema = CreateTaskFieldsSchema.superRefine(
+  requireCodeChangeInstruction,
+);
+
+export const TaskSchema = CreateTaskFieldsSchema.extend({
   id,
   status: TaskStatusSchema,
   repository: RepositorySchema.optional(),
@@ -135,7 +199,7 @@ export const TaskSchema = CreateTaskSchema.extend({
   createdAt: timestamp,
   updatedAt: timestamp,
   result: TaskResultSchema.optional(),
-});
+}).superRefine(requireCodeChangeInstruction);
 
 export const ExecutorKindSchema = z.enum(["disconnected", "codex"]);
 
@@ -174,6 +238,22 @@ export const ProjectSessionSchema = z.object({
   updatedAt: timestamp,
 });
 
+export const DirtyWorktreePolicySchema = z.enum([
+  "allow-host-attached",
+  "require-confirmation",
+]);
+
+export const ProjectSettingsSchema = z.object({
+  dirtyWorktreePolicy: DirtyWorktreePolicySchema.default("allow-host-attached"),
+  revision: z.number().int().positive(),
+  updatedAt: timestamp,
+});
+
+export const UpdateProjectSettingsSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+  dirtyWorktreePolicy: DirtyWorktreePolicySchema,
+});
+
 export const ConfigureProjectSessionSchema = z.object({
   projectKey: z.string().min(1),
   displayName: z.string().min(1),
@@ -202,6 +282,8 @@ export const BatchStatusSchema = z.enum([
 export const BatchResultSchema = z.object({
   summary: z.string().min(1),
   changedFiles: z.array(z.string()).default([]),
+  batchChangedFiles: z.array(z.string()).optional(),
+  preExistingDirtyFiles: z.array(z.string()).optional(),
   notes: z.array(z.string()).default([]),
   technicalDetails: z.string().min(1).optional(),
   retryable: z.boolean().optional(),
@@ -219,7 +301,14 @@ export const ApplyBatchSchema = z.object({
   updatedAt: timestamp,
   startedAt: timestamp.optional(),
   completedAt: timestamp.optional(),
+  workingTreeBaseline: WorkingTreeBaselineSchema.optional(),
+  dirtyWorktreeApproval: DirtyWorktreeApprovalSchema.optional(),
   result: BatchResultSchema.optional(),
+});
+
+export const ApproveDirtyBatchSchema = z.object({
+  expectedBaselineFingerprint: z.string().min(1),
+  source: DirtyWorktreeApprovalSourceSchema.default("overlay"),
 });
 
 export const FinishBatchSchema = z.object({
@@ -230,13 +319,15 @@ export const FinishBatchSchema = z.object({
 export const UpdateTaskSchema = z
   .object({
     expectedRevision: z.number().int().positive().optional(),
-    instruction: z.string().trim().min(1).optional(),
+    instruction: z.string().trim().optional(),
+    attachments: z.array(AttachmentSchema).max(3).optional(),
     status: TaskStatusSchema.optional(),
     result: TaskResultSchema.optional(),
   })
   .refine(
     (value) =>
       value.instruction !== undefined ||
+      value.attachments !== undefined ||
       value.status !== undefined ||
       value.result !== undefined,
     {
@@ -252,8 +343,16 @@ export type Region = z.infer<typeof RegionSchema>;
 export type Relation = z.infer<typeof RelationSchema>;
 export type Annotation = z.infer<typeof AnnotationSchema>;
 export type Intent = z.infer<typeof IntentSchema>;
+export type TaskKind = z.infer<typeof TaskKindSchema>;
+export type Attachment = z.infer<typeof AttachmentSchema>;
 export type TaskStatus = z.infer<typeof TaskStatusSchema>;
 export type Repository = z.infer<typeof RepositorySchema>;
+export type WorkingTreeFile = z.infer<typeof WorkingTreeFileSchema>;
+export type WorkingTreeBaseline = z.infer<typeof WorkingTreeBaselineSchema>;
+export type DirtyWorktreeApprovalSource = z.infer<
+  typeof DirtyWorktreeApprovalSourceSchema
+>;
+export type DirtyWorktreeApproval = z.infer<typeof DirtyWorktreeApprovalSchema>;
 export type TaskResult = z.infer<typeof TaskResultSchema>;
 export type CreateTask = z.infer<typeof CreateTaskSchema>;
 export type Task = z.infer<typeof TaskSchema>;
@@ -263,6 +362,9 @@ export type ExecutorOwnership = z.infer<typeof ExecutorOwnershipSchema>;
 export type ExecutorStatus = z.infer<typeof ExecutorStatusSchema>;
 export type ProjectExecutor = z.infer<typeof ProjectExecutorSchema>;
 export type ProjectSession = z.infer<typeof ProjectSessionSchema>;
+export type DirtyWorktreePolicy = z.infer<typeof DirtyWorktreePolicySchema>;
+export type ProjectSettings = z.infer<typeof ProjectSettingsSchema>;
+export type UpdateProjectSettings = z.infer<typeof UpdateProjectSettingsSchema>;
 export type ConfigureProjectSession = z.input<
   typeof ConfigureProjectSessionSchema
 >;
@@ -270,4 +372,5 @@ export type AttachExecutor = z.input<typeof AttachExecutorSchema>;
 export type BatchStatus = z.infer<typeof BatchStatusSchema>;
 export type BatchResult = z.infer<typeof BatchResultSchema>;
 export type ApplyBatch = z.infer<typeof ApplyBatchSchema>;
+export type ApproveDirtyBatch = z.input<typeof ApproveDirtyBatchSchema>;
 export type FinishBatch = z.infer<typeof FinishBatchSchema>;

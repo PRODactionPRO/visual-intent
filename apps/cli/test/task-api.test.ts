@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { FileTaskStore } from "@visual-intent/file-store";
+import type { WorkingTreeBaseline } from "@visual-intent/protocol";
 
 import { startDaemon } from "../src/daemon.js";
 
@@ -43,10 +44,19 @@ describe("task API", () => {
 
     const directory = await mkdtemp(join(tmpdir(), "visual-intent-api-"));
     removeAfterTest.push(directory);
-    const store = new FileTaskStore(join(directory, "tasks.json"), {
-      root: "/workspace/target",
-      name: "target",
-    });
+    let workingTreeBaseline: WorkingTreeBaseline = {
+      capturedAt: new Date().toISOString(),
+      fingerprint: "clean",
+      files: [],
+    };
+    const store = new FileTaskStore(
+      join(directory, "tasks.json"),
+      {
+        root: "/workspace/target",
+        name: "target",
+      },
+      { captureWorkingTreeBaseline: async () => workingTreeBaseline },
+    );
     await store.configureSession({
       projectKey: "target",
       displayName: "Target",
@@ -78,6 +88,32 @@ describe("task API", () => {
       },
     };
 
+    const initialSettingsResponse = await fetch(`${api}/settings`);
+    const initialSettings = (await initialSettingsResponse.json()) as {
+      dirtyWorktreePolicy: string;
+      revision: number;
+    };
+    expect(initialSettings.dirtyWorktreePolicy).toBe("allow-host-attached");
+
+    const settingsResponse = await fetch(`${api}/settings`, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        "x-visual-intent-token": "test-token",
+      },
+      body: JSON.stringify({
+        expectedRevision: initialSettings.revision,
+        dirtyWorktreePolicy: "require-confirmation",
+      }),
+    });
+    expect(settingsResponse.status).toBe(200);
+    expect(await settingsResponse.json()).toEqual(
+      expect.objectContaining({
+        dirtyWorktreePolicy: "require-confirmation",
+        revision: initialSettings.revision + 1,
+      }),
+    );
+
     const unauthorizedResponse = await fetch(`${api}/tasks`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -100,6 +136,33 @@ describe("task API", () => {
       repository: { root: string };
     };
     expect(created.repository.root).toBe("/workspace/target");
+
+    const unownedAttachmentResponse = await fetch(
+      `${api}/tasks/${created.id}`,
+      {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-visual-intent-token": "test-token",
+        },
+        body: JSON.stringify({
+          expectedRevision: created.revision,
+          attachments: [
+            {
+              id: "attachment-1",
+              kind: "screenshot",
+              mimeType: "image/png",
+              fileName: "capture.png",
+              byteSize: 128,
+              sha256: "a".repeat(64),
+              path: ".visual-intent/attachments/attachment-1.png",
+              createdAt: "2026-08-19T00:00:00.000Z",
+            },
+          ],
+        }),
+      },
+    );
+    expect(unownedAttachmentResponse.status).toBe(400);
 
     const updatedResponse = await fetch(`${api}/tasks/${created.id}`, {
       method: "PATCH",
@@ -169,5 +232,59 @@ describe("task API", () => {
     expect(allTasks).toEqual([
       expect.objectContaining({ id: queuedTask.id, status: "queued" }),
     ]);
+
+    workingTreeBaseline = {
+      capturedAt: new Date().toISOString(),
+      fingerprint: "dirty-baseline",
+      files: [
+        {
+          path: "src/existing.ts",
+          status: " M",
+          fingerprint: "existing-file",
+        },
+      ],
+    };
+    await fetch(`${api}/tasks`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-visual-intent-token": "test-token",
+      },
+      body: JSON.stringify({
+        ...payload,
+        surface: { ...payload.surface, id: "surface-3" },
+        intent: { ...payload.intent, id: "intent-3" },
+      }),
+    });
+    const blockedResponse = await fetch(`${api}/tasks/apply`, {
+      method: "POST",
+      headers: { "x-visual-intent-token": "test-token" },
+    });
+    const blocked = (await blockedResponse.json()) as {
+      batch: { id: string; status: string };
+    };
+    expect(blocked.batch.status).toBe("needs_input");
+
+    const approvedResponse = await fetch(
+      `${api}/batches/${blocked.batch.id}/approve-dirty`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-visual-intent-token": "test-token",
+        },
+        body: JSON.stringify({
+          expectedBaselineFingerprint: "dirty-baseline",
+          source: "overlay",
+        }),
+      },
+    );
+    const approved = (await approvedResponse.json()) as {
+      approved: boolean;
+      batch: { status: string };
+    };
+    expect(approvedResponse.status).toBe(200);
+    expect(approved.approved).toBe(true);
+    expect(approved.batch.status).toBe("waiting_for_executor");
   });
 });

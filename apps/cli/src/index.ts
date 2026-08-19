@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
   appendFile,
   chmod,
@@ -14,12 +13,17 @@ import { promisify } from "node:util";
 
 import { Command } from "commander";
 
-import { FileTaskStore } from "@visual-intent/file-store";
+import {
+  FileTaskStore,
+  captureGitWorkingTreeBaseline,
+} from "@visual-intent/file-store";
 import { runMcpServer } from "@visual-intent/mcp-server";
 
 import { startDaemon } from "./daemon.js";
 import { CodexDispatcher } from "./dispatcher.js";
 import { projectTaskStorePath } from "./project-storage.js";
+import { ProjectAttachmentStore } from "./attachment-store.js";
+import { loadOrCreateApiToken } from "./connection-token.js";
 
 const execFileAsync = promisify(execFile);
 const program = new Command();
@@ -97,12 +101,19 @@ program
       };
       const projectKey = options.project ?? repository.name;
       const displayName = options.name ?? projectKey;
-      const apiToken = randomBytes(24).toString("hex");
       const connectionDirectory = join(repositoryRoot, ".visual-intent");
       const connectionPath = join(connectionDirectory, "connection.json");
       await ensureLocalGitExclude(repositoryRoot);
       await mkdir(connectionDirectory, { recursive: true });
-      const store = new FileTaskStore(storePath, repository);
+      const apiToken = await loadOrCreateApiToken(connectionPath, {
+        projectKey,
+        repositoryRoot,
+      });
+      const store = new FileTaskStore(storePath, repository, {
+        allowDirty: options.allowDirty,
+        captureWorkingTreeBaseline: () =>
+          captureGitWorkingTreeBaseline(repositoryRoot),
+      });
       await store.configureSession({
         projectKey,
         displayName,
@@ -133,11 +144,11 @@ program
         port,
         target: options.target,
         store,
+        attachmentStore: new ProjectAttachmentStore(repositoryRoot),
         apiToken,
         createDispatcher: (onChanged) =>
           new CodexDispatcher({
             store,
-            allowDirty: options.allowDirty,
             onChanged,
           }),
       });
@@ -196,7 +207,11 @@ program
   .description("Attach a Codex thread to a running Visual Intent project")
   .option("--daemon <url>", "Visual Intent daemon URL", "http://127.0.0.1:7310")
   .option("--repo <path>", "project repository", process.cwd())
-  .option("--thread <id>", "Codex thread id", process.env.CODEX_THREAD_ID)
+  .option(
+    "--thread <id>",
+    "Codex thread id",
+    process.env.CODEX_THREAD_ID ?? process.env.CODEX_SESSION_ID,
+  )
   .action(
     async (options: { daemon: string; repo: string; thread?: string }) => {
       if (!options.thread) {
@@ -240,8 +255,25 @@ program
   .command("mcp")
   .description("Run the coding-agent bridge over MCP stdio")
   .option("--store <path>", "local task file", ".visual-intent/tasks.json")
-  .action(async (options: { store: string }) => {
-    await runMcpServer(new FileTaskStore(resolve(options.store)));
+  .option("--repo <path>", "project repository for Git baseline checks")
+  .action(async (options: { store: string; repo?: string }) => {
+    const repositoryRoot = options.repo
+      ? await realpath(resolve(options.repo))
+      : undefined;
+    await runMcpServer(
+      new FileTaskStore(
+        resolve(options.store),
+        repositoryRoot
+          ? { root: repositoryRoot, name: basename(repositoryRoot) }
+          : undefined,
+        repositoryRoot
+          ? {
+              captureWorkingTreeBaseline: () =>
+                captureGitWorkingTreeBaseline(repositoryRoot),
+            }
+          : {},
+      ),
+    );
   });
 
 await program.parseAsync();

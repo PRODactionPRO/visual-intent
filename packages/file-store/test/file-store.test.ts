@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import type { CreateTask } from "@visual-intent/protocol";
 
-import { FileTaskStore } from "../src/index.js";
+import { FileTaskStore, captureGitWorkingTreeBaseline } from "../src/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -18,6 +18,7 @@ async function makeStore(): Promise<FileTaskStore> {
 
 const input: CreateTask = {
   protocolVersion: "0.1",
+  kind: "code-change",
   surface: {
     id: "surface-1",
     platform: "web",
@@ -29,6 +30,7 @@ const input: CreateTask = {
   frames: [],
   relations: [],
   annotations: [],
+  attachments: [],
   intent: {
     id: "intent-1",
     action: "change",
@@ -313,5 +315,148 @@ describe("FileTaskStore", () => {
         source: "plugin",
       }),
     ).rejects.toThrow("repository mismatch");
+  });
+
+  it("requires exact dirty-worktree approval and separates Apply changes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-baseline-"));
+    temporaryDirectories.push(directory);
+    const repositoryRoot = join(directory, "repository");
+    await mkdir(repositoryRoot);
+    const { execFile } = await import("node:child_process");
+    await new Promise<void>((resolve, reject) =>
+      execFile("git", ["init", "--quiet", repositoryRoot], (error) =>
+        error ? reject(error) : resolve(),
+      ),
+    );
+    await writeFile(join(repositoryRoot, "existing-change.txt"), "before\n");
+    const repository = { root: repositoryRoot, name: "repository" };
+    const store = new FileTaskStore(
+      join(repositoryRoot, ".visual-intent", "tasks.json"),
+      repository,
+      {
+        captureWorkingTreeBaseline: () =>
+          captureGitWorkingTreeBaseline(repositoryRoot),
+      },
+    );
+    await store.configureSession({
+      projectKey: "baseline",
+      displayName: "Baseline",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+    await store.create(input);
+
+    const blocked = await store.dispatchReady();
+    if (!blocked?.workingTreeBaseline) throw new Error("Expected baseline");
+    expect(blocked.status).toBe("needs_input");
+    expect(blocked.result).toEqual(
+      expect.objectContaining({
+        failureCode: "dirty_worktree_approval_required",
+        preExistingDirtyFiles: ["existing-change.txt"],
+      }),
+    );
+    await expect(store.retryBatch(blocked.id)).rejects.toThrow(
+      "without resolving or approving",
+    );
+
+    const staleFingerprint = blocked.workingTreeBaseline.fingerprint;
+    await writeFile(join(repositoryRoot, "existing-change.txt"), "changed\n");
+    const staleApproval = await store.approveDirtyBatch(blocked.id, {
+      expectedBaselineFingerprint: staleFingerprint,
+      source: "overlay",
+    });
+    expect(staleApproval.approved).toBe(false);
+    expect(staleApproval.batch.workingTreeBaseline?.fingerprint).not.toBe(
+      staleFingerprint,
+    );
+
+    const approved = await store.approveDirtyBatch(blocked.id, {
+      expectedBaselineFingerprint:
+        staleApproval.batch.workingTreeBaseline?.fingerprint ?? "missing",
+      source: "overlay",
+    });
+    expect(approved.approved).toBe(true);
+    expect(approved.batch.status).toBe("waiting_for_executor");
+
+    const claimed = await store.claimBatch(blocked.id);
+    expect(claimed.batch.status).toBe("in_progress");
+    await writeFile(join(repositoryRoot, "existing-change.txt"), "after\n");
+    await writeFile(join(repositoryRoot, "apply-change.txt"), "created\n");
+    const finished = await store.finishBatch(blocked.id, "completed", {
+      summary: "Implemented",
+      changedFiles: ["incorrect-old-file.txt"],
+      notes: [],
+    });
+
+    expect(finished.batch.result?.preExistingDirtyFiles).toEqual([
+      "existing-change.txt",
+    ]);
+    expect(finished.batch.result?.batchChangedFiles).toEqual([
+      "apply-change.txt",
+      "existing-change.txt",
+    ]);
+    expect(finished.batch.result?.changedFiles).toEqual([
+      "apply-change.txt",
+      "existing-change.txt",
+    ]);
+  });
+
+  it("uses the project policy only for a connected host-attached executor", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-settings-"));
+    temporaryDirectories.push(directory);
+    const repository = { root: directory, name: "settings" };
+    const dirtyBaseline = {
+      capturedAt: "2026-08-19T00:00:00.000Z",
+      fingerprint: "dirty-settings-baseline",
+      files: [
+        {
+          path: "src/existing.ts",
+          status: " M",
+          fingerprint: "existing-file",
+        },
+      ],
+    };
+    const store = new FileTaskStore(join(directory, "tasks.json"), repository, {
+      captureWorkingTreeBaseline: async () => dirtyBaseline,
+    });
+    await store.configureSession({
+      projectKey: "settings",
+      displayName: "Settings",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+    await store.attachExecutor({
+      repositoryRoot: directory,
+      threadId: "thread-settings",
+      ownership: "host-attached",
+      source: "plugin",
+    });
+    await store.create(input);
+
+    const allowed = await store.dispatchReady();
+    expect(allowed?.status).toBe("waiting_for_executor");
+    expect(allowed?.dirtyWorktreeApproval?.source).toBe("project-settings");
+
+    const currentSettings = await store.getSettings();
+    const updatedSettings = await store.updateSettings({
+      expectedRevision: currentSettings.revision,
+      dirtyWorktreePolicy: "require-confirmation",
+    });
+    expect(updatedSettings.dirtyWorktreePolicy).toBe("require-confirmation");
+
+    await store.create({
+      ...input,
+      surface: { ...input.surface, id: "surface-settings-2" },
+      intent: { ...input.intent, id: "intent-settings-2" },
+    });
+    const blocked = await store.dispatchReady();
+    expect(blocked?.status).toBe("needs_input");
+
+    const reopened = new FileTaskStore(join(directory, "tasks.json"));
+    expect((await reopened.getSettings()).dirtyWorktreePolicy).toBe(
+      "require-confirmation",
+    );
   });
 });

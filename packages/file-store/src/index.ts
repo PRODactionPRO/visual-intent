@@ -1,19 +1,25 @@
-import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
+  lstat,
   mkdir,
   open,
   readFile,
+  readlink,
   rename,
   stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
 
 import {
   BatchNotFoundError,
   BatchStateConflictError,
   RepositoryMismatchError,
+  updateProjectSettings,
   SessionNotConfiguredError,
   TaskStateConflictError,
   TaskNotFoundError,
@@ -23,37 +29,59 @@ import {
   type TaskStore,
 } from "@visual-intent/core";
 import {
+  ApproveDirtyBatchSchema,
   ApplyBatchSchema,
   ProjectSessionSchema,
+  ProjectSettingsSchema,
   PROTOCOL_VERSION,
   TaskSchema,
   type ApplyBatch,
+  type ApproveDirtyBatch,
   type AttachExecutor,
   type BatchResult,
   type BatchStatus,
   type ConfigureProjectSession,
   type CreateTask,
   type ProjectSession,
+  type ProjectSettings,
   type Repository,
   type Task,
   type UpdateTask,
+  type UpdateProjectSettings,
+  type WorkingTreeBaseline,
+  type WorkingTreeFile,
 } from "@visual-intent/protocol";
+
+const execFileAsync = promisify(execFile);
 
 interface StoreDocument {
   protocolVersion: typeof PROTOCOL_VERSION;
   tasks: Task[];
+  settings: ProjectSettings;
   session?: ProjectSession;
   batches: ApplyBatch[];
 }
 
+const DEFAULT_SETTINGS = ProjectSettingsSchema.parse({
+  dirtyWorktreePolicy: "allow-host-attached",
+  revision: 1,
+  updatedAt: "1970-01-01T00:00:00.000Z",
+});
+
 const EMPTY_STORE: StoreDocument = {
   protocolVersion: PROTOCOL_VERSION,
   tasks: [],
+  settings: DEFAULT_SETTINGS,
   batches: [],
 };
 const LOCK_RETRIES = 80;
 const LOCK_RETRY_MS = 25;
 const STALE_LOCK_MS = 30_000;
+
+export interface FileTaskStoreOptions {
+  allowDirty?: boolean;
+  captureWorkingTreeBaseline?: () => Promise<WorkingTreeBaseline>;
+}
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -65,6 +93,7 @@ export class FileTaskStore implements TaskStore {
   constructor(
     readonly filePath: string,
     private readonly repository?: Repository,
+    private readonly options: FileTaskStoreOptions = {},
   ) {
     this.lockPath = `${filePath}.lock`;
   }
@@ -123,6 +152,20 @@ export class FileTaskStore implements TaskStore {
       }
       document.tasks.splice(index, 1);
       await this.writeDocument(document);
+    });
+  }
+
+  async getSettings(): Promise<ProjectSettings> {
+    return (await this.readDocument()).settings;
+  }
+
+  async updateSettings(input: UpdateProjectSettings): Promise<ProjectSettings> {
+    return this.withLock(async () => {
+      const document = await this.readDocument();
+      const settings = updateProjectSettings(document.settings, input);
+      document.settings = settings;
+      await this.writeDocument(document);
+      return settings;
     });
   }
 
@@ -254,7 +297,17 @@ export class FileTaskStore implements TaskStore {
 
       const now = new Date().toISOString();
       const batchId = randomUUID();
-      const status = dispatchStatus(session);
+      const baseline = await this.captureWorkingTreeBaseline();
+      const settingsAllowHostAttached =
+        document.settings.dirtyWorktreePolicy === "allow-host-attached" &&
+        session.executor.kind === "codex" &&
+        session.executor.ownership === "host-attached" &&
+        session.executor.threadId !== undefined;
+      const dirtyAllowed =
+        Boolean(this.options.allowDirty) || settingsAllowHostAttached;
+      const dirtyBlocked =
+        baseline !== undefined && baseline.files.length > 0 && !dirtyAllowed;
+      const status = dirtyBlocked ? "needs_input" : dispatchStatus(session);
       const batch = ApplyBatchSchema.parse({
         id: batchId,
         sessionId: session.id,
@@ -266,15 +319,40 @@ export class FileTaskStore implements TaskStore {
         ...(session.executor.threadId
           ? { executorThreadId: session.executor.threadId }
           : {}),
+        ...(baseline ? { workingTreeBaseline: baseline } : {}),
+        ...(baseline && baseline.files.length > 0 && dirtyAllowed
+          ? {
+              dirtyWorktreeApproval: {
+                approvedAt: now,
+                baselineFingerprint: baseline.fingerprint,
+                source: this.options.allowDirty
+                  ? ("cli" as const)
+                  : ("project-settings" as const),
+              },
+            }
+          : {}),
+        ...(dirtyBlocked ? { result: dirtyWorktreeResult(baseline) } : {}),
         createdAt: now,
         updatedAt: now,
       });
 
       document.tasks = document.tasks.map((task) =>
         task.status === "ready"
-          ? this.transitionTask(task, "queued", now, batchId)
+          ? this.transitionTask(
+              task,
+              dirtyBlocked ? "needs_input" : "queued",
+              now,
+              batchId,
+            )
           : task,
       );
+      if (dirtyBlocked) {
+        document.session = ProjectSessionSchema.parse({
+          ...session,
+          executor: { ...session.executor, status: "needs_input" },
+          updatedAt: now,
+        });
+      }
       document.batches.push(batch);
       await this.writeDocument(document);
       return batch;
@@ -291,6 +369,16 @@ export class FileTaskStore implements TaskStore {
       if (index === -1 || !existing) throw new BatchNotFoundError(id);
       if (existing.status !== "needs_input" && existing.status !== "failed") {
         throw new BatchStateConflictError(id, existing.status, "retried");
+      }
+      if (existing.result?.failureCode === "dirty_worktree_approval_required") {
+        const currentBaseline = await this.captureWorkingTreeBaseline();
+        if (!currentBaseline || currentBaseline.files.length > 0) {
+          throw new BatchStateConflictError(
+            id,
+            existing.status,
+            "retried without resolving or approving the dirty worktree",
+          );
+        }
       }
       if (existing.status === "failed" && !isRetryableFailure(existing)) {
         throw new BatchStateConflictError(id, existing.status, "retried");
@@ -347,6 +435,102 @@ export class FileTaskStore implements TaskStore {
     });
   }
 
+  async approveDirtyBatch(
+    id: string,
+    input: ApproveDirtyBatch,
+  ): Promise<{ approved: boolean; batch: ApplyBatch; tasks: Task[] }> {
+    const approval = ApproveDirtyBatchSchema.parse(input);
+    return this.withLock(async () => {
+      const document = await this.readDocument();
+      const session = document.session;
+      if (!session) throw new SessionNotConfiguredError();
+      const index = document.batches.findIndex((batch) => batch.id === id);
+      const existing = document.batches[index];
+      if (index === -1 || !existing) throw new BatchNotFoundError(id);
+      if (
+        existing.status !== "needs_input" ||
+        existing.result?.failureCode !== "dirty_worktree_approval_required"
+      ) {
+        throw new BatchStateConflictError(
+          id,
+          existing.status,
+          "approved for a dirty worktree",
+        );
+      }
+
+      const baseline = await this.captureWorkingTreeBaseline();
+      if (!baseline) {
+        throw new Error(
+          "Working-tree inspection is unavailable for this Visual Intent session",
+        );
+      }
+      const now = new Date().toISOString();
+      if (baseline.fingerprint !== approval.expectedBaselineFingerprint) {
+        const batch = ApplyBatchSchema.parse({
+          ...existing,
+          workingTreeBaseline: baseline,
+          result: dirtyWorktreeResult(baseline),
+          updatedAt: now,
+        });
+        document.batches[index] = batch;
+        await this.writeDocument(document);
+        return {
+          approved: false,
+          batch,
+          tasks: document.tasks.filter((task) =>
+            batch.taskIds.includes(task.id),
+          ),
+        };
+      }
+
+      const batchBase: ApplyBatch = { ...existing };
+      delete batchBase.completedAt;
+      delete batchBase.result;
+      delete batchBase.startedAt;
+      const status = dispatchStatus(session);
+      const batch = ApplyBatchSchema.parse({
+        ...batchBase,
+        status,
+        workingTreeBaseline: baseline,
+        dirtyWorktreeApproval: {
+          approvedAt: now,
+          baselineFingerprint: baseline.fingerprint,
+          source: approval.source,
+        },
+        updatedAt: now,
+      });
+      document.batches[index] = batch;
+      document.tasks = document.tasks.map((task) => {
+        if (!batch.taskIds.includes(task.id)) return task;
+        const taskBase: Task = { ...task };
+        delete taskBase.result;
+        return TaskSchema.parse({
+          ...taskBase,
+          status: "queued",
+          revision: task.revision + 1,
+          updatedAt: now,
+        });
+      });
+      const executorBase = { ...session.executor };
+      delete executorBase.lastError;
+      document.session = ProjectSessionSchema.parse({
+        ...session,
+        executor: {
+          ...executorBase,
+          status:
+            session.executor.kind === "codex" ? "connected" : "disconnected",
+        },
+        updatedAt: now,
+      });
+      await this.writeDocument(document);
+      return {
+        approved: true,
+        batch,
+        tasks: document.tasks.filter((task) => batch.taskIds.includes(task.id)),
+      };
+    });
+  }
+
   async claimBatch(id: string): Promise<{ batch: ApplyBatch; tasks: Task[] }> {
     return this.withLock(async () => {
       const document = await this.readDocument();
@@ -361,9 +545,58 @@ export class FileTaskStore implements TaskStore {
       }
 
       const now = new Date().toISOString();
+      const baseline = await this.captureWorkingTreeBaseline();
+      const hasDirtyFiles = baseline !== undefined && baseline.files.length > 0;
+      const approvedCurrentBaseline =
+        hasDirtyFiles &&
+        (this.options.allowDirty ||
+          existing.dirtyWorktreeApproval?.baselineFingerprint ===
+            baseline.fingerprint);
+      if (hasDirtyFiles && !approvedCurrentBaseline) {
+        const batch = ApplyBatchSchema.parse({
+          ...existing,
+          status: "needs_input",
+          workingTreeBaseline: baseline,
+          dirtyWorktreeApproval: undefined,
+          result: dirtyWorktreeResult(baseline),
+          updatedAt: now,
+        });
+        document.batches[index] = batch;
+        document.tasks = document.tasks.map((task) =>
+          batch.taskIds.includes(task.id)
+            ? this.transitionTask(task, "needs_input", now, batch.id)
+            : task,
+        );
+        if (document.session) {
+          document.session = ProjectSessionSchema.parse({
+            ...document.session,
+            executor: { ...document.session.executor, status: "needs_input" },
+            updatedAt: now,
+          });
+        }
+        await this.writeDocument(document);
+        return {
+          batch,
+          tasks: document.tasks.filter((task) =>
+            batch.taskIds.includes(task.id),
+          ),
+        };
+      }
+      const batchBase: ApplyBatch = { ...existing };
+      if (!hasDirtyFiles) delete batchBase.dirtyWorktreeApproval;
       const batch = ApplyBatchSchema.parse({
-        ...existing,
+        ...batchBase,
         status: "in_progress",
+        ...(baseline ? { workingTreeBaseline: baseline } : {}),
+        ...(hasDirtyFiles && this.options.allowDirty
+          ? {
+              dirtyWorktreeApproval: {
+                approvedAt: now,
+                baselineFingerprint: baseline.fingerprint,
+                source: "cli" as const,
+              },
+            }
+          : {}),
         startedAt: now,
         updatedAt: now,
       });
@@ -403,10 +636,24 @@ export class FileTaskStore implements TaskStore {
       }
 
       const now = new Date().toISOString();
+      const currentBaseline = await this.captureWorkingTreeBaseline();
+      const preExistingDirtyFiles = existing.workingTreeBaseline
+        ? existing.workingTreeBaseline.files.map((file) => file.path).sort()
+        : (result.preExistingDirtyFiles ?? []);
+      const batchChangedFiles =
+        existing.workingTreeBaseline && currentBaseline
+          ? changedSince(existing.workingTreeBaseline, currentBaseline)
+          : (result.batchChangedFiles ?? result.changedFiles);
+      const normalizedResult: BatchResult = {
+        ...result,
+        changedFiles: batchChangedFiles,
+        batchChangedFiles,
+        preExistingDirtyFiles,
+      };
       const batch = ApplyBatchSchema.parse({
         ...existing,
         status,
-        result,
+        result: normalizedResult,
         completedAt: now,
         updatedAt: now,
       });
@@ -422,9 +669,11 @@ export class FileTaskStore implements TaskStore {
           ? updateTask(task, {
               status: taskStatus,
               result: {
-                summary: result.summary,
-                changedFiles: result.changedFiles,
-                notes: result.notes,
+                summary: normalizedResult.summary,
+                changedFiles: normalizedResult.changedFiles,
+                batchChangedFiles: normalizedResult.batchChangedFiles,
+                preExistingDirtyFiles: normalizedResult.preExistingDirtyFiles,
+                notes: normalizedResult.notes,
               },
             })
           : task,
@@ -456,6 +705,12 @@ export class FileTaskStore implements TaskStore {
 
   async claimQueued(): Promise<Task[]> {
     return this.transitionAll("queued", "in_progress");
+  }
+
+  private async captureWorkingTreeBaseline(): Promise<
+    WorkingTreeBaseline | undefined
+  > {
+    return this.options.captureWorkingTreeBaseline?.();
   }
 
   private transitionTask(
@@ -567,6 +822,10 @@ export class FileTaskStore implements TaskStore {
       return {
         protocolVersion: PROTOCOL_VERSION,
         tasks: value.tasks.map((task) => TaskSchema.parse(task)),
+        settings:
+          "settings" in value && value.settings !== undefined
+            ? ProjectSettingsSchema.parse(value.settings)
+            : structuredClone(DEFAULT_SETTINGS),
         session:
           "session" in value && value.session !== undefined
             ? ProjectSessionSchema.parse(value.session)
@@ -679,4 +938,107 @@ function parseStoredBatch(value: unknown): ApplyBatch {
 
 function isActiveWriterConflict(message: string): boolean {
   return /already has an active writer|thread-store conflict/iu.test(message);
+}
+
+function dirtyWorktreeResult(baseline: WorkingTreeBaseline): BatchResult {
+  const files = baseline.files.map((file) => file.path).sort();
+  return {
+    summary:
+      "В репозитории уже есть незакоммиченные изменения. Visual Intent остановил пакет до явного подтверждения.",
+    changedFiles: [],
+    batchChangedFiles: [],
+    preExistingDirtyFiles: files,
+    notes: [
+      "Проверьте список файлов и подтвердите продолжение поверх текущих изменений только для этого Apply-пакета.",
+    ],
+    retryable: false,
+    failureCode: "dirty_worktree_approval_required",
+  };
+}
+
+function changedSince(
+  baseline: WorkingTreeBaseline,
+  current: WorkingTreeBaseline,
+): string[] {
+  const before = new Map(
+    baseline.files.map((file) => [
+      file.path,
+      `${file.status}\0${file.fingerprint}`,
+    ]),
+  );
+  const after = new Map(
+    current.files.map((file) => [
+      file.path,
+      `${file.status}\0${file.fingerprint}`,
+    ]),
+  );
+  return [...new Set([...before.keys(), ...after.keys()])]
+    .filter((path) => before.get(path) !== after.get(path))
+    .sort();
+}
+
+export async function captureGitWorkingTreeBaseline(
+  repositoryRoot: string,
+): Promise<WorkingTreeBaseline> {
+  const { stdout } = await execFileAsync(
+    "git",
+    [
+      "-C",
+      repositoryRoot,
+      "status",
+      "--porcelain=v1",
+      "-z",
+      "--untracked-files=all",
+    ],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  const entries = stdout.split("\0");
+  const files: WorkingTreeFile[] = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    const status = entry.slice(0, 2);
+    const path = entry.slice(3);
+    if (!path) continue;
+    if (status.includes("R") || status.includes("C")) index += 1;
+    if (path === ".visual-intent" || path.startsWith(".visual-intent/")) {
+      continue;
+    }
+    files.push({
+      path,
+      status,
+      fingerprint: await fingerprintPath(join(repositoryRoot, path)),
+    });
+  }
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    capturedAt: new Date().toISOString(),
+    fingerprint: createHash("sha256")
+      .update(JSON.stringify(files))
+      .digest("hex"),
+    files,
+  };
+}
+
+async function fingerprintPath(path: string): Promise<string> {
+  try {
+    const details = await lstat(path);
+    if (details.isSymbolicLink()) {
+      return `symlink:${await readlink(path)}`;
+    }
+    if (!details.isFile()) {
+      return `other:${details.mode}:${details.size}:${details.mtimeMs}`;
+    }
+    const hash = createHash("sha256");
+    await new Promise<void>((resolve, reject) => {
+      const stream = createReadStream(path);
+      stream.on("data", (chunk) => hash.update(chunk));
+      stream.on("error", reject);
+      stream.on("end", resolve);
+    });
+    return `file:${details.mode}:${hash.digest("hex")}`;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "unknown";
+    return `unavailable:${code}`;
+  }
 }

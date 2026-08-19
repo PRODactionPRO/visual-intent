@@ -30,6 +30,16 @@ describe("MCP bridge", () => {
       async delete() {
         throw new Error("not used");
       },
+      async getSettings() {
+        return {
+          dirtyWorktreePolicy: "allow-host-attached",
+          revision: 1,
+          updatedAt: "2026-08-19T00:00:00.000Z",
+        };
+      },
+      async updateSettings() {
+        throw new Error("not used");
+      },
       async getSession() {
         return undefined;
       },
@@ -52,6 +62,9 @@ describe("MCP bridge", () => {
         return undefined;
       },
       async retryBatch() {
+        throw new Error("not used");
+      },
+      async approveDirtyBatch() {
         throw new Error("not used");
       },
       async claimBatch() {
@@ -81,6 +94,7 @@ describe("MCP bridge", () => {
       "visual_intent_list_tasks",
       "visual_intent_list_batches",
       "visual_intent_retry_batch",
+      "visual_intent_approve_dirty_batch",
       "visual_intent_claim_batch",
       "visual_intent_get_task",
       "visual_intent_finish_batch",

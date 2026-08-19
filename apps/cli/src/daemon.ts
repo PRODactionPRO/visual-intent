@@ -1,4 +1,6 @@
+import { readFile } from "node:fs/promises";
 import { ServerResponse, createServer, type IncomingMessage } from "node:http";
+import { createRequire } from "node:module";
 import type { AddressInfo, Socket } from "node:net";
 
 import httpProxy from "http-proxy";
@@ -9,6 +11,7 @@ import type { ApplyBatch } from "@visual-intent/protocol";
 import { createOverlayScript } from "@visual-intent/web-overlay";
 
 import { handleApiRequest } from "./api.js";
+import type { ProjectAttachmentStore } from "./attachment-store.js";
 
 export interface DaemonOptions {
   host: string;
@@ -16,6 +19,7 @@ export interface DaemonOptions {
   target: string;
   store: TaskStore;
   apiToken?: string;
+  attachmentStore?: ProjectAttachmentStore;
   createDispatcher?: (onChanged: (event: unknown) => void) => {
     enqueue(batch: ApplyBatch): void;
     idle?(): Promise<void>;
@@ -31,6 +35,7 @@ export interface RunningDaemon {
 }
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const require = createRequire(import.meta.url);
 
 export function validateTarget(rawTarget: string): URL {
   const target = new URL(rawTarget);
@@ -45,7 +50,7 @@ export function validateTarget(rawTarget: string): URL {
 
 export function injectOverlayTag(html: string): string {
   const tag =
-    '<script src="/_visual-intent/overlay.js" data-visual-intent></script>';
+    '<script src="/_visual-intent/vendor/html2canvas.js" data-visual-intent-vendor></script><script src="/_visual-intent/overlay.js" data-visual-intent></script>';
   return /<\/body\s*>/i.test(html)
     ? html.replace(/<\/body\s*>/i, `${tag}</body>`)
     : `${html}${tag}`;
@@ -67,6 +72,10 @@ export async function startDaemon(
 ): Promise<RunningDaemon> {
   const target = validateTarget(options.target);
   const overlayScript = createOverlayScript({ apiToken: options.apiToken });
+  const html2canvasScript = await readFile(
+    require.resolve("html2canvas/dist/html2canvas.min.js"),
+    "utf8",
+  );
   const proxy = httpProxy.createProxyServer({
     changeOrigin: true,
     target: target.href,
@@ -148,6 +157,7 @@ export async function startDaemon(
       if (
         await handleApiRequest(request, response, options.store, broadcast, {
           apiToken: options.apiToken,
+          attachmentStore: options.attachmentStore,
           onBatchReady: enqueueBatch,
         })
       )
@@ -157,6 +167,18 @@ export async function startDaemon(
         request.url ?? "/",
         `http://${request.headers.host ?? options.host}`,
       );
+      if (
+        request.method === "GET" &&
+        url.pathname === "/_visual-intent/vendor/html2canvas.js"
+      ) {
+        response.writeHead(200, {
+          "cache-control": "public, max-age=31536000, immutable",
+          "content-type": "text/javascript; charset=utf-8",
+          "content-length": Buffer.byteLength(html2canvasScript),
+        });
+        response.end(html2canvasScript);
+        return;
+      }
       if (
         request.method === "GET" &&
         url.pathname === "/_visual-intent/overlay.js"

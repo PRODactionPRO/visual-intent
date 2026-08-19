@@ -21,6 +21,7 @@
   "properties": {
     "protocolVersion": { "const": "0.1" },
     "id": { "type": "string", "minLength": 1 },
+    "kind": { "enum": ["code-change", "figma-component"] },
     "surface": { "$ref": "#/$defs/surface" },
     "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
     "regions": { "type": "array", "items": { "$ref": "#/$defs/region" } },
@@ -29,6 +30,11 @@
     "annotations": {
       "type": "array",
       "items": { "$ref": "#/$defs/annotation" }
+    },
+    "attachments": {
+      "type": "array",
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/attachment" }
     },
     "intent": { "$ref": "#/$defs/intent" },
     "repository": { "$ref": "#/$defs/repository" },
@@ -49,6 +55,21 @@
     "updatedAt": { "type": "string", "format": "date-time" },
     "result": { "$ref": "#/$defs/result" }
   },
+  "anyOf": [
+    {
+      "required": ["kind"],
+      "properties": { "kind": { "const": "figma-component" } }
+    },
+    {
+      "properties": {
+        "intent": {
+          "properties": {
+            "instruction": { "type": "string", "pattern": "\\S" }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "repository": {
       "type": "object",
@@ -190,13 +211,38 @@
         "createdAt": { "type": "string", "format": "date-time" }
       }
     },
+    "attachment": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "mimeType",
+        "fileName",
+        "byteSize",
+        "sha256",
+        "path",
+        "createdAt"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["screenshot", "file"] },
+        "mimeType": { "type": "string", "minLength": 1 },
+        "fileName": { "type": "string", "minLength": 1 },
+        "byteSize": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "path": { "type": "string", "minLength": 1 },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
     "intent": {
       "type": "object",
       "required": ["id", "action", "instruction", "acceptanceCriteria"],
       "properties": {
         "id": { "type": "string" },
         "action": { "enum": ["change", "review", "question", "bug"] },
-        "instruction": { "type": "string", "minLength": 1 },
+        "instruction": { "type": "string" },
         "acceptanceCriteria": { "type": "array", "items": { "type": "string" } }
       }
     },

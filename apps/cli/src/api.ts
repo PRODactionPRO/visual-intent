@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   BatchNotFoundError,
   BatchStateConflictError,
+  ProjectSettingsRevisionConflictError,
   RepositoryMismatchError,
   RevisionConflictError,
   SessionNotConfiguredError,
@@ -16,11 +17,17 @@ import {
   CreateTaskSchema,
   FinishBatchSchema,
   TaskStatusSchema,
+  UpdateProjectSettingsSchema,
   UpdateTaskSchema,
 } from "@visual-intent/protocol";
 import { ZodError } from "zod";
 
+import type { ProjectAttachmentStore } from "./attachment-store.js";
+
 const BODY_LIMIT_BYTES = 1024 * 1024;
+const ATTACHMENT_LIMIT_BYTES = 10 * 1024 * 1024;
+
+class InvalidAttachmentRequestError extends Error {}
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   const serialized = JSON.stringify(body);
@@ -33,6 +40,15 @@ function json(response: ServerResponse, status: number, body: unknown): void {
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
+  return JSON.parse(
+    (await readBody(request, BODY_LIMIT_BYTES)).toString("utf8") || "{}",
+  );
+}
+
+async function readBody(
+  request: IncomingMessage,
+  limitBytes: number,
+): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
 
@@ -41,12 +57,14 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
       ? chunk
       : Buffer.from(chunk as Uint8Array);
     size += buffer.length;
-    if (size > BODY_LIMIT_BYTES) throw new Error("Request body exceeds 1 MB");
+    if (size > limitBytes) {
+      throw new Error(
+        `Request body exceeds ${Math.round(limitBytes / 1024 / 1024)} MB`,
+      );
+    }
     chunks.push(buffer);
   }
-
-  const raw = Buffer.concat(chunks).toString("utf8");
-  return raw ? (JSON.parse(raw) as unknown) : {};
+  return Buffer.concat(chunks);
 }
 
 export async function handleApiRequest(
@@ -57,6 +75,7 @@ export async function handleApiRequest(
   options: {
     apiToken?: string;
     onBatchReady?: (batchId: string) => void;
+    attachmentStore?: ProjectAttachmentStore;
   } = {},
 ): Promise<boolean> {
   const url = new URL(
@@ -95,6 +114,95 @@ export async function handleApiRequest(
       const session = await store.getSession();
       if (!session) throw new SessionNotConfiguredError();
       json(response, 200, session);
+      return true;
+    }
+
+    if (
+      request.method === "GET" &&
+      url.pathname === "/_visual-intent/api/settings"
+    ) {
+      json(response, 200, await store.getSettings());
+      return true;
+    }
+
+    if (
+      request.method === "PATCH" &&
+      url.pathname === "/_visual-intent/api/settings"
+    ) {
+      const settings = await store.updateSettings(
+        UpdateProjectSettingsSchema.parse(await readJson(request)),
+      );
+      onTaskChanged({ type: "settings.updated", settings });
+      json(response, 200, settings);
+      return true;
+    }
+
+    const attachmentMatch = url.pathname.match(
+      /^\/_visual-intent\/api\/attachments\/([^/]+)$/,
+    );
+    if (attachmentMatch?.[1] && request.method === "GET") {
+      if (!options.attachmentStore)
+        throw new InvalidAttachmentRequestError(
+          "Attachment storage is unavailable",
+        );
+      const attachment = await options.attachmentStore.get(
+        decodeURIComponent(attachmentMatch[1]),
+      );
+      response.writeHead(200, {
+        "cache-control": "private, no-store",
+        "content-length": attachment.body.byteLength,
+        "content-type": attachment.metadata.mimeType,
+        "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(attachment.metadata.fileName)}`,
+      });
+      response.end(attachment.body);
+      return true;
+    }
+
+    if (
+      request.method === "POST" &&
+      url.pathname === "/_visual-intent/api/attachments"
+    ) {
+      if (!options.attachmentStore)
+        throw new InvalidAttachmentRequestError(
+          "Attachment storage is unavailable",
+        );
+      const kind = url.searchParams.get("kind");
+      if (kind !== "screenshot" && kind !== "file") {
+        throw new InvalidAttachmentRequestError(
+          "Attachment kind must be screenshot or file",
+        );
+      }
+      const mimeType = String(request.headers["content-type"] ?? "")
+        .split(";", 1)[0]
+        ?.trim();
+      if (!mimeType)
+        throw new InvalidAttachmentRequestError(
+          "Attachment content-type is required",
+        );
+      const width = positiveInteger(url.searchParams.get("width"));
+      const height = positiveInteger(url.searchParams.get("height"));
+      const attachment = await options.attachmentStore.save({
+        body: await readBody(request, ATTACHMENT_LIMIT_BYTES),
+        kind,
+        mimeType,
+        fileName: url.searchParams.get("fileName") ?? "attachment",
+        ...(width ? { width } : {}),
+        ...(height ? { height } : {}),
+      });
+      json(response, 201, attachment);
+      return true;
+    }
+
+    if (attachmentMatch?.[1] && request.method === "DELETE") {
+      if (!options.attachmentStore)
+        throw new InvalidAttachmentRequestError(
+          "Attachment storage is unavailable",
+        );
+      await options.attachmentStore.delete(
+        decodeURIComponent(attachmentMatch[1]),
+      );
+      response.writeHead(204, { "cache-control": "no-store" });
+      response.end();
       return true;
     }
 
@@ -161,9 +269,21 @@ export async function handleApiRequest(
       request.method === "POST" &&
       url.pathname === "/_visual-intent/api/tasks"
     ) {
-      const task = await store.create(
-        CreateTaskSchema.parse(await readJson(request)),
-      );
+      const input = CreateTaskSchema.parse(await readJson(request));
+      if (input.attachments.length > 0 && !options.attachmentStore) {
+        throw new InvalidAttachmentRequestError(
+          "Attachment storage is unavailable",
+        );
+      }
+      const attachmentStore = options.attachmentStore;
+      if (attachmentStore) {
+        await Promise.all(
+          input.attachments.map((attachment) =>
+            attachmentStore.assertOwned(attachment),
+          ),
+        );
+      }
+      const task = await store.create(input);
       onTaskChanged(task);
       json(response, 201, task);
       return true;
@@ -253,10 +373,21 @@ export async function handleApiRequest(
     }
 
     if (match?.[1] && request.method === "PATCH") {
-      const task = await store.update(
-        decodeURIComponent(match[1]),
-        UpdateTaskSchema.parse(await readJson(request)),
-      );
+      const input = UpdateTaskSchema.parse(await readJson(request));
+      if (input.attachments && input.attachments.length > 0) {
+        const attachmentStore = options.attachmentStore;
+        if (!attachmentStore) {
+          throw new InvalidAttachmentRequestError(
+            "Attachment storage is unavailable",
+          );
+        }
+        await Promise.all(
+          input.attachments.map((attachment) =>
+            attachmentStore.assertOwned(attachment),
+          ),
+        );
+      }
+      const task = await store.update(decodeURIComponent(match[1]), input);
       onTaskChanged(task);
       json(response, 200, task);
       return true;
@@ -286,15 +417,20 @@ export async function handleApiRequest(
       json(response, 409, { error: error.message });
     } else if (
       error instanceof BatchStateConflictError ||
+      error instanceof ProjectSettingsRevisionConflictError ||
       error instanceof RevisionConflictError ||
       error instanceof TaskStateConflictError
     ) {
       json(response, 409, { error: error.message });
-    } else if (error instanceof ZodError || error instanceof SyntaxError) {
+    } else if (
+      error instanceof ZodError ||
+      error instanceof SyntaxError ||
+      error instanceof InvalidAttachmentRequestError
+    ) {
       json(response, 400, { error: error.message });
     } else if (
       error instanceof Error &&
-      error.message === "Request body exceeds 1 MB"
+      error.message.startsWith("Request body exceeds ")
     ) {
       json(response, 413, { error: error.message });
     } else {
@@ -304,4 +440,10 @@ export async function handleApiRequest(
     }
     return true;
   }
+}
+
+function positiveInteger(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }

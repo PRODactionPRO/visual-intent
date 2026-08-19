@@ -19,6 +19,7 @@ import {
   BatchNotFoundError,
   BatchStateConflictError,
   RepositoryMismatchError,
+  updateProjectSettings,
   SessionNotConfiguredError,
   TaskStateConflictError,
   TaskNotFoundError,
@@ -31,6 +32,7 @@ import {
   ApproveDirtyBatchSchema,
   ApplyBatchSchema,
   ProjectSessionSchema,
+  ProjectSettingsSchema,
   PROTOCOL_VERSION,
   TaskSchema,
   type ApplyBatch,
@@ -41,9 +43,11 @@ import {
   type ConfigureProjectSession,
   type CreateTask,
   type ProjectSession,
+  type ProjectSettings,
   type Repository,
   type Task,
   type UpdateTask,
+  type UpdateProjectSettings,
   type WorkingTreeBaseline,
   type WorkingTreeFile,
 } from "@visual-intent/protocol";
@@ -53,13 +57,21 @@ const execFileAsync = promisify(execFile);
 interface StoreDocument {
   protocolVersion: typeof PROTOCOL_VERSION;
   tasks: Task[];
+  settings: ProjectSettings;
   session?: ProjectSession;
   batches: ApplyBatch[];
 }
 
+const DEFAULT_SETTINGS = ProjectSettingsSchema.parse({
+  dirtyWorktreePolicy: "allow-host-attached",
+  revision: 1,
+  updatedAt: "1970-01-01T00:00:00.000Z",
+});
+
 const EMPTY_STORE: StoreDocument = {
   protocolVersion: PROTOCOL_VERSION,
   tasks: [],
+  settings: DEFAULT_SETTINGS,
   batches: [],
 };
 const LOCK_RETRIES = 80;
@@ -140,6 +152,20 @@ export class FileTaskStore implements TaskStore {
       }
       document.tasks.splice(index, 1);
       await this.writeDocument(document);
+    });
+  }
+
+  async getSettings(): Promise<ProjectSettings> {
+    return (await this.readDocument()).settings;
+  }
+
+  async updateSettings(input: UpdateProjectSettings): Promise<ProjectSettings> {
+    return this.withLock(async () => {
+      const document = await this.readDocument();
+      const settings = updateProjectSettings(document.settings, input);
+      document.settings = settings;
+      await this.writeDocument(document);
+      return settings;
     });
   }
 
@@ -272,10 +298,15 @@ export class FileTaskStore implements TaskStore {
       const now = new Date().toISOString();
       const batchId = randomUUID();
       const baseline = await this.captureWorkingTreeBaseline();
+      const settingsAllowHostAttached =
+        document.settings.dirtyWorktreePolicy === "allow-host-attached" &&
+        session.executor.kind === "codex" &&
+        session.executor.ownership === "host-attached" &&
+        session.executor.threadId !== undefined;
+      const dirtyAllowed =
+        Boolean(this.options.allowDirty) || settingsAllowHostAttached;
       const dirtyBlocked =
-        baseline !== undefined &&
-        baseline.files.length > 0 &&
-        !this.options.allowDirty;
+        baseline !== undefined && baseline.files.length > 0 && !dirtyAllowed;
       const status = dirtyBlocked ? "needs_input" : dispatchStatus(session);
       const batch = ApplyBatchSchema.parse({
         id: batchId,
@@ -289,12 +320,14 @@ export class FileTaskStore implements TaskStore {
           ? { executorThreadId: session.executor.threadId }
           : {}),
         ...(baseline ? { workingTreeBaseline: baseline } : {}),
-        ...(baseline && baseline.files.length > 0 && this.options.allowDirty
+        ...(baseline && baseline.files.length > 0 && dirtyAllowed
           ? {
               dirtyWorktreeApproval: {
                 approvedAt: now,
                 baselineFingerprint: baseline.fingerprint,
-                source: "cli" as const,
+                source: this.options.allowDirty
+                  ? ("cli" as const)
+                  : ("project-settings" as const),
               },
             }
           : {}),
@@ -789,6 +822,10 @@ export class FileTaskStore implements TaskStore {
       return {
         protocolVersion: PROTOCOL_VERSION,
         tasks: value.tasks.map((task) => TaskSchema.parse(task)),
+        settings:
+          "settings" in value && value.settings !== undefined
+            ? ProjectSettingsSchema.parse(value.settings)
+            : structuredClone(DEFAULT_SETTINGS),
         session:
           "session" in value && value.session !== undefined
             ? ProjectSessionSchema.parse(value.session)

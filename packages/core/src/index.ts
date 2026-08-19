@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import {
   CreateTaskSchema,
+  ProjectSettingsSchema,
   TaskSchema,
+  UpdateProjectSettingsSchema,
   UpdateTaskSchema,
   type CreateTask,
   type ApplyBatch,
@@ -12,10 +14,12 @@ import {
   type BatchStatus,
   type ConfigureProjectSession,
   type ProjectSession,
+  type ProjectSettings,
   type Repository,
   type Task,
   type TaskStatus,
   type UpdateTask,
+  type UpdateProjectSettings,
 } from "@visual-intent/protocol";
 
 export interface ListTasksFilter {
@@ -28,6 +32,8 @@ export interface TaskStore {
   create(input: CreateTask): Promise<Task>;
   update(id: string, patch: UpdateTask): Promise<Task>;
   delete(id: string): Promise<void>;
+  getSettings(): Promise<ProjectSettings>;
+  updateSettings(input: UpdateProjectSettings): Promise<ProjectSettings>;
   getSession(): Promise<ProjectSession | undefined>;
   configureSession(input: ConfigureProjectSession): Promise<ProjectSession>;
   attachExecutor(input: AttachExecutor): Promise<ProjectSession>;
@@ -98,6 +104,36 @@ export class RevisionConflictError extends Error {
   }
 }
 
+export class ProjectSettingsRevisionConflictError extends Error {
+  constructor(expected: number, actual: number) {
+    super(
+      `Project settings revision conflict: expected ${expected}, actual ${actual}`,
+    );
+    this.name = "ProjectSettingsRevisionConflictError";
+  }
+}
+
+export function updateProjectSettings(
+  settings: ProjectSettings,
+  input: UpdateProjectSettings,
+  now = new Date(),
+): ProjectSettings {
+  const parsedSettings = ProjectSettingsSchema.parse(settings);
+  const parsedInput = UpdateProjectSettingsSchema.parse(input);
+  if (parsedInput.expectedRevision !== parsedSettings.revision) {
+    throw new ProjectSettingsRevisionConflictError(
+      parsedInput.expectedRevision,
+      parsedSettings.revision,
+    );
+  }
+  return ProjectSettingsSchema.parse({
+    ...parsedSettings,
+    dirtyWorktreePolicy: parsedInput.dirtyWorktreePolicy,
+    revision: parsedSettings.revision + 1,
+    updatedAt: now.toISOString(),
+  });
+}
+
 export class TaskStateConflictError extends Error {
   constructor(id: string, status: TaskStatus, operation: string) {
     super(`Task ${id} cannot be ${operation} while its status is ${status}`);
@@ -142,6 +178,13 @@ export function updateTask(
     );
   }
 
+  if (parsedPatch.instruction !== undefined) {
+    CreateTaskSchema.parse({
+      ...task,
+      intent: { ...task.intent, instruction: parsedPatch.instruction },
+    });
+  }
+
   const changes = {
     ...(parsedPatch.instruction !== undefined
       ? {
@@ -155,6 +198,9 @@ export function updateTask(
               : annotation,
           ),
         }
+      : {}),
+    ...(parsedPatch.attachments !== undefined
+      ? { attachments: parsedPatch.attachments }
       : {}),
     ...(parsedPatch.status !== undefined ? { status: parsedPatch.status } : {}),
     ...(parsedPatch.result !== undefined ? { result: parsedPatch.result } : {}),

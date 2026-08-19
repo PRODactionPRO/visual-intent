@@ -21,5 +21,8 @@
   },
   "devDependencies": {
     "tsup": "8.5.1"
+  },
+  "dependencies": {
+    "lucide": "1.28.0"
   }
 }

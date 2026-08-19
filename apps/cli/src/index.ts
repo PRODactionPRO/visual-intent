@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import {
   appendFile,
   chmod,
@@ -23,6 +22,8 @@ import { runMcpServer } from "@visual-intent/mcp-server";
 import { startDaemon } from "./daemon.js";
 import { CodexDispatcher } from "./dispatcher.js";
 import { projectTaskStorePath } from "./project-storage.js";
+import { ProjectAttachmentStore } from "./attachment-store.js";
+import { loadOrCreateApiToken } from "./connection-token.js";
 
 const execFileAsync = promisify(execFile);
 const program = new Command();
@@ -100,11 +101,14 @@ program
       };
       const projectKey = options.project ?? repository.name;
       const displayName = options.name ?? projectKey;
-      const apiToken = randomBytes(24).toString("hex");
       const connectionDirectory = join(repositoryRoot, ".visual-intent");
       const connectionPath = join(connectionDirectory, "connection.json");
       await ensureLocalGitExclude(repositoryRoot);
       await mkdir(connectionDirectory, { recursive: true });
+      const apiToken = await loadOrCreateApiToken(connectionPath, {
+        projectKey,
+        repositoryRoot,
+      });
       const store = new FileTaskStore(storePath, repository, {
         allowDirty: options.allowDirty,
         captureWorkingTreeBaseline: () =>
@@ -140,6 +144,7 @@ program
         port,
         target: options.target,
         store,
+        attachmentStore: new ProjectAttachmentStore(repositoryRoot),
         apiToken,
         createDispatcher: (onChanged) =>
           new CodexDispatcher({

@@ -30,6 +30,16 @@ describe("MCP bridge", () => {
       async delete() {
         throw new Error("not used");
       },
+      async getSettings() {
+        return {
+          dirtyWorktreePolicy: "allow-host-attached",
+          revision: 1,
+          updatedAt: "2026-08-19T00:00:00.000Z",
+        };
+      },
+      async updateSettings() {
+        throw new Error("not used");
+      },
       async getSession() {
         return undefined;
       },

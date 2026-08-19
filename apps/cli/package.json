@@ -25,6 +25,7 @@
     "@visual-intent/protocol": "workspace:*",
     "@visual-intent/web-overlay": "workspace:*",
     "commander": "14.0.2",
+    "html2canvas": "1.4.1",
     "http-proxy": "1.18.1",
     "ws": "8.21.3",
     "zod": "4.4.3"

@@ -23,6 +23,7 @@ const temporaryDirectories: string[] = [];
 
 const input: CreateTask = {
   protocolVersion: "0.1",
+  kind: "code-change",
   surface: {
     id: "surface-1",
     platform: "web",
@@ -34,6 +35,7 @@ const input: CreateTask = {
   frames: [],
   relations: [],
   annotations: [],
+  attachments: [],
   intent: {
     id: "intent-1",
     action: "change",
@@ -53,6 +55,7 @@ afterEach(async () => {
 async function createBatch(
   ownership: "host-attached" | "visual-intent-owned",
   workerThreadId?: string,
+  taskInput: CreateTask = input,
 ) {
   const directory = await mkdtemp(join(tmpdir(), "visual-intent-dispatcher-"));
   temporaryDirectories.push(directory);
@@ -90,7 +93,7 @@ async function createBatch(
       source: "plugin",
     });
   }
-  await store.create(input);
+  await store.create(taskInput);
   const batch = await store.dispatchReady();
   if (!batch) throw new Error("Expected Apply batch");
   return { repositoryRoot, store, batch };
@@ -159,6 +162,32 @@ describe("CodexDispatcher", () => {
         threadId: "thread-worker",
       }),
     );
+  });
+
+  it("keeps the trusted Figma instruction when the optional user comment is empty", async () => {
+    const { repositoryRoot, store, batch } = await createBatch(
+      "visual-intent-owned",
+      undefined,
+      {
+        ...input,
+        kind: "figma-component",
+        intent: { ...input.intent, instruction: "" },
+      },
+    );
+    const run = vi.fn<CodexRunner["run"]>().mockResolvedValue(completed());
+    const dispatcher = new CodexDispatcher({ store, runner: { run } });
+
+    dispatcher.enqueue(batch);
+    await dispatcher.idle();
+
+    expect(run).toHaveBeenCalledWith({
+      repositoryRoot,
+      threadId: undefined,
+      prompt: expect.stringContaining(
+        "Recreate the selected component in the Figma file linked to this project exactly as it appears",
+      ),
+    });
+    expect(run.mock.calls[0]?.[0].prompt).not.toContain("User note:");
   });
 
   it("resumes only an explicitly Visual Intent-owned worker thread", async () => {

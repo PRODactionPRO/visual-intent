@@ -18,6 +18,7 @@ async function makeStore(): Promise<FileTaskStore> {
 
 const input: CreateTask = {
   protocolVersion: "0.1",
+  kind: "code-change",
   surface: {
     id: "surface-1",
     platform: "web",
@@ -29,6 +30,7 @@ const input: CreateTask = {
   frames: [],
   relations: [],
   annotations: [],
+  attachments: [],
   intent: {
     id: "intent-1",
     action: "change",
@@ -398,5 +400,63 @@ describe("FileTaskStore", () => {
       "apply-change.txt",
       "existing-change.txt",
     ]);
+  });
+
+  it("uses the project policy only for a connected host-attached executor", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-settings-"));
+    temporaryDirectories.push(directory);
+    const repository = { root: directory, name: "settings" };
+    const dirtyBaseline = {
+      capturedAt: "2026-08-19T00:00:00.000Z",
+      fingerprint: "dirty-settings-baseline",
+      files: [
+        {
+          path: "src/existing.ts",
+          status: " M",
+          fingerprint: "existing-file",
+        },
+      ],
+    };
+    const store = new FileTaskStore(join(directory, "tasks.json"), repository, {
+      captureWorkingTreeBaseline: async () => dirtyBaseline,
+    });
+    await store.configureSession({
+      projectKey: "settings",
+      displayName: "Settings",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+    await store.attachExecutor({
+      repositoryRoot: directory,
+      threadId: "thread-settings",
+      ownership: "host-attached",
+      source: "plugin",
+    });
+    await store.create(input);
+
+    const allowed = await store.dispatchReady();
+    expect(allowed?.status).toBe("waiting_for_executor");
+    expect(allowed?.dirtyWorktreeApproval?.source).toBe("project-settings");
+
+    const currentSettings = await store.getSettings();
+    const updatedSettings = await store.updateSettings({
+      expectedRevision: currentSettings.revision,
+      dirtyWorktreePolicy: "require-confirmation",
+    });
+    expect(updatedSettings.dirtyWorktreePolicy).toBe("require-confirmation");
+
+    await store.create({
+      ...input,
+      surface: { ...input.surface, id: "surface-settings-2" },
+      intent: { ...input.intent, id: "intent-settings-2" },
+    });
+    const blocked = await store.dispatchReady();
+    expect(blocked?.status).toBe("needs_input");
+
+    const reopened = new FileTaskStore(join(directory, "tasks.json"));
+    expect((await reopened.getSettings()).dirtyWorktreePolicy).toBe(
+      "require-confirmation",
+    );
   });
 });

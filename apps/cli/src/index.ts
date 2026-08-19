@@ -23,6 +23,11 @@ import { startDaemon } from "./daemon.js";
 import { CodexDispatcher } from "./dispatcher.js";
 import { projectTaskStorePath } from "./project-storage.js";
 import { ProjectAttachmentStore } from "./attachment-store.js";
+import {
+  registerBridgeSession,
+  unregisterBridgeSession,
+} from "./bridge-registry.js";
+import { startBridge } from "./bridge.js";
 import { loadOrCreateApiToken } from "./connection-token.js";
 
 const execFileAsync = promisify(execFile);
@@ -177,6 +182,11 @@ program
         { encoding: "utf8", mode: 0o600 },
       );
       await chmod(connectionPath, 0o600);
+      const bridgeRegistration = await registerBridgeSession(
+        session,
+        daemonUrl,
+        apiToken,
+      );
 
       console.log(`Visual Intent: ${daemonUrl}`);
       console.log(`Proxy target:  ${daemon.target}`);
@@ -198,7 +208,11 @@ program
         process.on("SIGINT", stop);
         process.on("SIGTERM", stop);
       });
-      await daemon.close();
+      try {
+        await daemon.close();
+      } finally {
+        await unregisterBridgeSession(bridgeRegistration);
+      }
     },
   );
 
@@ -250,6 +264,35 @@ program
       );
     },
   );
+
+program
+  .command("bridge")
+  .description("Run the local bridge for the unpacked Chrome extension")
+  .option("--host <host>", "host to bind", "127.0.0.1")
+  .option("--port <port>", "port to bind", "7309")
+  .action(async (options: { host: string; port: string }) => {
+    const port = Number.parseInt(options.port, 10);
+    if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+      throw new Error("Port must be an integer between 0 and 65535");
+    }
+    const bridge = await startBridge({
+      host: options.host,
+      port,
+    });
+    console.log(`Visual Intent Bridge: http://${bridge.host}:${bridge.port}`);
+    console.log(`Chrome pairing code:  ${bridge.pairingCode}`);
+    console.log("Press Ctrl+C to stop.");
+    await new Promise<void>((done) => {
+      const stop = (): void => {
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        done();
+      };
+      process.on("SIGINT", stop);
+      process.on("SIGTERM", stop);
+    });
+    await bridge.close();
+  });
 
 program
   .command("mcp")

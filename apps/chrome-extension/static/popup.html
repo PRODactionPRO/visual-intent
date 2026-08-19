@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Visual Intent</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="mark">VI</div>
+        <div>
+          <h1>Visual Intent</h1>
+          <p>Внешний визуальный референс</p>
+        </div>
+      </header>
+
+      <section id="pairing" class="panel" hidden>
+        <label for="pairing-code">Код локального Bridge</label>
+        <div class="row">
+          <input
+            id="pairing-code"
+            inputmode="numeric"
+            maxlength="6"
+            placeholder="000000"
+          />
+          <button id="pair" class="secondary">Подключить</button>
+        </div>
+        <small
+          >Код показан в терминале команды
+          <code>visual-intent bridge</code>.</small
+        >
+      </section>
+
+      <section id="workspace" hidden>
+        <div class="section-title">
+          <span>Проект назначения</span>
+          <button id="refresh" class="link">Обновить</button>
+        </div>
+        <div id="sessions" class="sessions"></div>
+        <p id="empty" class="empty" hidden>
+          Запущенные проекты Visual Intent не найдены.
+        </p>
+        <button id="select" class="primary" disabled>
+          Выделить элемент на странице
+        </button>
+        <button id="apply" class="secondary full" disabled>
+          Нет задач для Apply
+        </button>
+      </section>
+
+      <p id="status" class="status" role="status"></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

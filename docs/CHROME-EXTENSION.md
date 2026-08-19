@@ -1,0 +1,84 @@
+# Локальное Chrome Extension
+
+## Назначение MVP
+
+`VI-CHROME-001` сокращает перенос визуального референса с внешнего сайта в задачу конкретного проекта. Пользователь явно выбирает проект, кликает по DOM-компоненту, добавляет собственный комментарий и при необходимости прикладывает до трёх изображений. Задача попадает в ту же очередь `ready`, что и комментарии proxy-overlay, а работа агента начинается только после `Apply`.
+
+Расширение не является загрузчиком сайтов и не пытается воспроизвести чужую бизнес-логику. В MVP оно не скачивает JavaScript, stylesheet-файлы, cookies, local storage, историю, сетевые запросы, видео или сайт целиком.
+
+## Состав визуального пакета
+
+- URL источника без credentials, query и fragment;
+- title и размер viewport;
+- выбранный DOM-элемент и не более 39 его потомков;
+- безопасные HTML-атрибуты: `id`, `class`, `role`, `aria-*`, `alt`, `title`, `type`, очищенные `href` и `src`;
+- allowlist computed CSS для layout, typography, цвета, фона, borders, shadow, transform, transition и animation metadata;
+- структура parent-child как platform-neutral `Node` и `Relation`;
+- координаты выбранного элемента как `Frame` и `Region`;
+- пользовательский комментарий;
+- до трёх явно приложенных изображений размером до 10 МБ каждое.
+
+Это не гарантирует pixel-perfect копирование само по себе: агент получает достаточно структурированную опору, но проверяет результат уже в коде целевого проекта. Интерактивное поведение пользователь описывает текстом.
+
+## Локальная маршрутизация
+
+```mermaid
+flowchart LR
+  Site["Любой обычный сайт"] --> Extension["Chrome Extension"]
+  Extension --> Bridge["Bridge 127.0.0.1:7309"]
+  Bridge --> A["Daemon проекта A"]
+  Bridge --> B["Daemon проекта B"]
+  A --> StoreA["project-a/.visual-intent"]
+  B --> StoreB["project-b/.visual-intent"]
+```
+
+Daemon регистрирует сессию в `~/.visual-intent/bridge/sessions/`. Файл имеет права `0600` и содержит токен, который остаётся на серверной стороне. Bridge не доверяет регистрации вслепую: перед показом проекта он запрашивает health endpoint, сверяет ID сессии и канонический корень репозитория. Неактивные или устаревшие регистрации в popup не отображаются.
+
+Расширение соединяется с Bridge по шестизначному коду. После pairing оно хранит отдельный Bridge token в `chrome.storage.local`; токены конкретных проектов ему не выдаются. Browser page не получает Bridge token, потому что сетевые запросы выполняет service worker расширения.
+
+## Разрешения Manifest V3
+
+```json
+{
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"]
+}
+```
+
+- `activeTab` даёт временный доступ только после клика пользователя по расширению;
+- `scripting` инжектирует selector/composer в текущую вкладку;
+- `storage` запоминает pairing и выбранный проект;
+- loopback host permission нужен только для локального Bridge.
+
+Разрешения `<all_urls>`, `tabs`, `cookies`, `history`, `clipboardRead` и доступ к удалённому backend не используются.
+
+## Сборка и установка
+
+```bash
+pnpm install
+pnpm build
+pnpm vip -- bridge
+```
+
+Затем в `chrome://extensions` нужно включить режим разработчика и загрузить папку:
+
+```text
+<visual-intent-repository>/apps/chrome-extension/dist
+```
+
+После каждого изменения исходников выполните:
+
+```bash
+pnpm --filter @visual-intent/chrome-extension build
+```
+
+и нажмите **Обновить** у карточки расширения. Изменение CLI/Bridge требует `pnpm --filter @visual-intent/cli build` и контролируемого перезапуска Bridge/daemon.
+
+## Ограничения первой версии
+
+- Chrome запрещает инжектирование в `chrome://`, Chrome Web Store и некоторые системные страницы;
+- cross-origin iframe остаётся отдельной поверхностью и не раскрывает DOM родительской странице;
+- pseudo-elements и runtime-состояния не представлены отдельными nodes;
+- computed CSS отражает текущее состояние элемента, а не весь набор responsive/hover/focus вариантов;
+- изображения не делаются автоматически: пользователь вставляет системный screenshot или файл вручную;
+- публичная публикация, аккаунты, облачный backend и синхронизация между компьютерами не входят в MVP.

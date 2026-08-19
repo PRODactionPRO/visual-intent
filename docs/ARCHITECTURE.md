@@ -23,7 +23,8 @@ flowchart LR
   RN["Будущий React Native adapter"] -. "тот же протокол" .-> API
   IOS["Будущий iOS adapter"] -. "тот же протокол" .-> API
   Android["Будущий Android adapter"] -. "тот же протокол" .-> API
-  Chrome["Будущий локальный Chrome Extension"] -. "reference package" .-> API
+  Chrome["Локальный Chrome Extension"] --> Bridge["Bridge 127.0.0.1:7309"]
+  Bridge --> API
   FigmaPlugin["Будущий локальный Figma plugin"] -. "reference package" .-> API
 ```
 
@@ -107,21 +108,24 @@ Proxy позволяет доказать полезность сценария 
 
 Текущий overlay в Chrome предпочитает browser-level захват текущей вкладки через `getDisplayMedia`: пользователь явно разрешает доступ к вкладке, после чего Visual Intent вырезает выбранную область из фактического потока пикселей. Это позволяет захватывать canvas, video, cross-origin изображения и временный слой рисунков так, как их отрисовал браузер. DOM-render через встроенный `html2canvas` с нормализацией современных CSS-цветов остаётся только fallback для окружений без browser capture. Будущий Chrome Extension заменит диалог выбора источника на контролируемый extension capture adapter.
 
-## Будущая локальная связка Chrome и Figma
+## Локальное Chrome Extension и будущая связка с Figma
 
 Локальные плагины проектируются как два adapters вокруг общего reference package:
 
 ```mermaid
 flowchart LR
   Site["Любой сайт в Chrome"] --> Extension["Локальный Chrome Extension"]
-  Extension --> Capture["Reference package: DOM, styles, screenshot, assets"]
-  Capture --> Daemon["Локальный daemon Visual Intent"]
+  Extension --> Capture["Reference package: DOM, computed styles, ручные изображения"]
+  Capture --> Bridge["Локальный Bridge"]
+  Bridge --> Daemon["Daemon явно выбранного проекта"]
   Daemon --> Agent["Coding-агент конкретного проекта"]
   Daemon --> Figma["Локальный Figma plugin"]
   Figma --> File["Явно выбранный Figma-файл"]
 ```
 
-Reference package содержит непрозрачный ID, origin URL, viewport, выбранный selector/region, безопасный снимок доступной структуры, computed styles, ссылки на загруженные daemon медиа и явное назначение. Браузер не передаёт произвольные локальные пути, а Figma plugin не выбирает файл или проект без действия пользователя.
+Reference package содержит origin URL без приватных query/fragment, viewport, выбранный selector/region, безопасный снимок доступной структуры, allowlist computed styles, ссылки на загруженные daemon медиа и явное назначение. Текущий Chrome adapter выражает структуру через обычные `Node` и `Relation`, поэтому coding-агент получает тот же protocol task, а не отдельный несовместимый формат. Браузер не передаёт произвольные локальные пути, а Figma plugin не выбирает файл или проект без действия пользователя.
+
+Один Bridge на `127.0.0.1:7309` читает server-owned регистрации запущенных daemon из пользовательской директории, health-check-ом отбрасывает устаревшие процессы и показывает расширению только безопасные данные сессии. Токены daemon остаются внутри Bridge; расширение выбирает непрозрачный `sessionId`. Это позволяет одновременно работать с несколькими проектами без конфликта портов и репозиториев.
 
 До появления облачной коллаборации пакеты хранятся локально вне Git в управляемой директории Visual Intent. В папку конкретного репозитория копируются только те данные, которые пользователь явно прикрепил к его задаче. Публичная публикация расширений, marketplace review, аккаунты организации и hosted backend являются отдельным будущим этапом и не нужны для development-установки на одном компьютере.
 

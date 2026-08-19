@@ -38,6 +38,15 @@ importers:
         specifier: 4.1.10
         version: 4.1.10(@types/node@24.10.0)(vite@8.2.1(@types/node@24.10.0)(esbuild@0.28.2))
 
+  apps/chrome-extension:
+    devDependencies:
+      "@types/chrome":
+        specifier: 0.1.12
+        version: 0.1.12
+      tsup:
+        specifier: 8.5.1
+        version: 8.5.1(postcss@8.5.26)(supports-color@10.2.2)(typescript@5.9.3)
+
   apps/cli:
     dependencies:
       "@openai/codex-sdk":
@@ -1054,6 +1063,12 @@ packages:
         integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==,
       }
 
+  "@types/chrome@0.1.12":
+    resolution:
+      {
+        integrity: sha512-jEkxs9GPQHx7g49WjkA8QDNcqODbMGDuBbWQOtjiS/Wf9AiEcDmQMIAgJvC/Xi36WoCVNx584g0Dd9ThJQCAiw==,
+      }
+
   "@types/deep-eql@4.0.2":
     resolution:
       {
@@ -1070,6 +1085,24 @@ packages:
     resolution:
       {
         integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==,
+      }
+
+  "@types/filesystem@0.0.36":
+    resolution:
+      {
+        integrity: sha512-vPDXOZuannb9FZdxgHnqSwAG/jvdGM8Wq+6N4D/d80z+D4HWH+bItqsZaVRQykAn6WEVeEkLm2oQigyHtgb0RA==,
+      }
+
+  "@types/filewriter@0.0.33":
+    resolution:
+      {
+        integrity: sha512-xFU8ZXTw4gd358lb2jw25nxY9QAgqn2+bKKjKOYfNCzN4DKCFetK7sPtrlpg66Ywe3vWY9FNxprZawAh9wfJ3g==,
+      }
+
+  "@types/har-format@1.2.16":
+    resolution:
+      {
+        integrity: sha512-fluxdy7ryD3MV6h8pTfTYpy/xQzCFC7m89nOH9y94cNqJ1mDIDPut7MnRHI3F6qRmh/cT2fUjG1MLdCNb4hE9A==,
       }
 
   "@types/http-proxy@1.17.17":
@@ -3476,11 +3509,24 @@ snapshots:
       "@types/deep-eql": 4.0.2
       assertion-error: 2.0.1
 
+  "@types/chrome@0.1.12":
+    dependencies:
+      "@types/filesystem": 0.0.36
+      "@types/har-format": 1.2.16
+
   "@types/deep-eql@4.0.2": {}
 
   "@types/esrecurse@4.3.1": {}
 
   "@types/estree@1.0.9": {}
+
+  "@types/filesystem@0.0.36":
+    dependencies:
+      "@types/filewriter": 0.0.33
+
+  "@types/filewriter@0.0.33": {}
+
+  "@types/har-format@1.2.16": {}
 
   "@types/http-proxy@1.17.17":
     dependencies:

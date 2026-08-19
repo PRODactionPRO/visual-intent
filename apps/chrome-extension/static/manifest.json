@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Visual Intent",
+  "version": "0.1.0",
+  "description": "Передаёт визуальные референсы с любой страницы в локальный проект Visual Intent.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "action": {
+    "default_title": "Visual Intent",
+    "default_popup": "popup.html"
+  }
+}

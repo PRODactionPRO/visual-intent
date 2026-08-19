@@ -1,0 +1,194 @@
+:root {
+  color-scheme: light;
+  font-family:
+    Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  background: #f4f6f8;
+  color: #111827;
+}
+
+* {
+  box-sizing: border-box;
+}
+body {
+  width: 360px;
+  margin: 0;
+}
+main {
+  padding: 16px;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.mark {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  background: #1689ec;
+  color: white;
+  font-weight: 800;
+}
+h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+p {
+  margin: 3px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+}
+.panel {
+  padding: 14px;
+  border: 1px solid #d9dee5;
+  border-radius: 14px;
+  background: white;
+}
+label,
+.section-title {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.row {
+  display: flex;
+  gap: 8px;
+}
+input {
+  min-width: 0;
+  flex: 1;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #cbd2dc;
+  border-radius: 10px;
+  font:
+    600 15px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  letter-spacing: 0.12em;
+}
+button {
+  border: 0;
+  border-radius: 10px;
+  font:
+    700 13px/1 Inter,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.primary {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 16px;
+  background: #1689ec;
+  color: white;
+}
+.secondary {
+  min-height: 38px;
+  padding: 0 13px;
+  background: #e8edf3;
+  color: #172033;
+}
+.secondary.full {
+  width: 100%;
+  margin-top: 8px;
+}
+.link {
+  padding: 4px 0;
+  background: transparent;
+  color: #1689ec;
+}
+small {
+  display: block;
+  margin-top: 9px;
+  color: #7b8491;
+  line-height: 1.4;
+}
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.sessions {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+.session {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 12px;
+  background: white;
+  text-align: left;
+  color: #111827;
+}
+.session.active {
+  border-color: #1689ec;
+  box-shadow: 0 0 0 2px rgb(22 137 236 / 12%);
+}
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #27c570;
+}
+.session-name {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.count {
+  min-width: 22px;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: #e9f4ff;
+  color: #0876d3;
+  text-align: center;
+  font-size: 11px;
+}
+.empty {
+  margin: 4px 0 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: #fff;
+  line-height: 1.4;
+}
+.status {
+  min-height: 16px;
+  margin-top: 10px;
+  color: #4b5563;
+  line-height: 1.35;
+}
+.status.error {
+  color: #c42b2b;
+}
+[hidden] {
+  display: none !important;
+}

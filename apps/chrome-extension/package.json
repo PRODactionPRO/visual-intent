@@ -1,0 +1,17 @@
+{
+  "name": "@visual-intent/chrome-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "build": "tsup src/service-worker.ts src/content.ts src/popup.ts --format iife --out-dir dist --clean --splitting false && node scripts/copy-static.mjs",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.1.12",
+    "tsup": "8.5.1"
+  }
+}

@@ -146,6 +146,7 @@ function bootOverlay(): void {
     .vip-width-control{display:flex;width:194px;height:22px;align-items:center;overflow:hidden;border-radius:4px;background:var(--soft)}.vip-width-value{display:grid;width:44px;height:22px;flex:0 0 44px;place-items:center;border-right:1px solid var(--bg);font-size:12px;line-height:15px}.vip-width-control input{width:137px;height:12px;margin:0 6px;accent-color:var(--blue);cursor:pointer}
     .vip-apply{width:59px!important;height:35px!important;min-width:59px;padding:0 11px!important;border-radius:10px!important;background:#20293a!important;color:#fff!important;font-size:13px!important;font-weight:600!important;line-height:18px!important}.vip-shell[data-theme=dark] .vip-apply:not(:disabled){background:var(--blue)!important}.vip-apply:disabled{background:#c0c0c0!important;color:#fff!important;opacity:1!important}.vip-task-badge{position:absolute;top:-2px;right:-2px;display:none;min-width:16px;height:16px;place-items:center;padding:0 4px;border-radius:999px;background:#2563eb;color:#fff;font-size:8px;line-height:10px;font-weight:500;letter-spacing:0}.vip-task-badge[data-visible=true]{display:grid}
     .vip-canvas{position:fixed;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}.vip-highlight,.vip-frame-box{position:fixed;display:none;pointer-events:none;border:2px solid var(--blue);background:rgba(30,143,241,.11);border-radius:2px}.vip-frame-box{border:2px dashed #f59e0b;background:rgba(245,158,11,.08);border-radius:4px}
+    .vip-element-inspector{pointer-events:none;position:fixed;display:none;width:240px;padding:9px 10px;border:1px solid var(--border);border-radius:12px;background:var(--bg);color:var(--text);box-shadow:0 10px 28px rgba(15,23,42,.16);font:500 12px/16px Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}.vip-shell[data-theme=dark] .vip-element-inspector{box-shadow:0 12px 32px rgba(0,0,0,.42)}.vip-element-inspector[data-visible=true]{display:grid;gap:2px}.vip-element-inspector-row{display:grid;grid-template-columns:50px minmax(0,1fr);align-items:center;gap:8px;min-width:0}.vip-element-inspector-row:first-child{grid-template-columns:minmax(0,1fr) auto}.vip-element-inspector-label{color:var(--muted)}.vip-element-inspector-value{min-width:0;overflow:hidden;text-align:right;text-overflow:ellipsis;white-space:nowrap}.vip-element-inspector-font{font-family:ui-monospace,"JetBrains Mono",SFMono-Regular,Menlo,monospace}.vip-element-inspector::after{content:"";position:absolute;left:var(--inspector-anchor-x,24px);width:9px;height:9px;border-right:1px solid var(--border);border-bottom:1px solid var(--border);background:var(--bg)}.vip-element-inspector[data-placement=above]::after{bottom:-5px;transform:rotate(45deg)}.vip-element-inspector[data-placement=below]::after{top:-5px;transform:rotate(225deg)}.vip-element-inspector[data-placement=over]::after{display:none}
     .vip-anchor-layer{position:fixed;inset:0;pointer-events:none}.vip-anchor{pointer-events:auto;position:absolute;display:grid;width:27px;height:27px;place-items:center;transform:translate(-50%,-50%);border:2px solid #fff;border-radius:999px;background:#2875e5;color:#fff;box-shadow:0 4px 14px rgba(0,0,0,.22);cursor:pointer;font-size:12px;font-weight:800}.vip-anchor .vip-icon{width:13px;height:13px}
     .vip-composer{pointer-events:auto;position:absolute;display:none;width:min(320px,calc(100vw - 24px));padding:8px 9px;border:1px solid var(--border);border-radius:25px;background:var(--bg);box-shadow:var(--shadow);transition:width .1s ease}.vip-composer[data-open=true]{display:flex;flex-direction:column;animation:vip-in .14s ease-out}.vip-composer[data-has-text=true][data-multiline=false]:not([data-has-attachments=true]){width:min(354px,calc(100vw - 24px))}.vip-composer[hidden]{display:none!important;pointer-events:none!important}@keyframes vip-in{from{opacity:0;transform:translateY(6px) scale(.99)}to{opacity:1;transform:none}}
     .vip-composer-main{display:flex;min-height:32px;align-items:center;justify-content:space-between}.vip-composer-content{display:flex;min-width:0;flex:1;align-items:center;gap:4px}.vip-context-icon{display:grid;width:32px;height:32px;flex:0 0 32px;place-items:center}.vip-context-icon .vip-icon{width:16px;height:16px}.vip-composer textarea{display:block;min-width:0;min-height:24px;height:24px;flex:1;resize:none;overflow:hidden;padding:2px 0;border:0;background:transparent;color:var(--text);outline:0;font:400 14px/20px Inter,ui-sans-serif,sans-serif;letter-spacing:-.1504px}.vip-composer textarea::placeholder{color:var(--muted);opacity:1}.vip-composer-actions{display:flex;height:32px;flex:0 0 auto;align-items:center;justify-content:flex-end;gap:4px}.vip-composer[data-multiline=true] .vip-composer-main{flex-direction:column;align-items:stretch}.vip-composer[data-multiline=true] .vip-composer-content{align-items:flex-start}.vip-composer[data-multiline=true] .vip-composer-actions{align-self:flex-end}.vip-composer[data-kind=figma-component][data-multiline=true] .vip-composer-actions{align-self:auto;justify-content:flex-end;width:100%}.vip-kind{display:none;align-items:center;gap:4px;padding:0 8px;border-radius:8px;font-size:12px;font-weight:500}.vip-composer[data-kind=figma-component][data-multiline=true] .vip-kind{display:flex;margin-right:auto}.vip-kind .vip-icon{width:16px;height:16px}
@@ -159,12 +160,12 @@ function bootOverlay(): void {
     .vip-wide{width:100%;margin:0 0 10px;padding:9px 11px;border-radius:10px;background:var(--blue);color:#fff;cursor:pointer}.vip-wide[hidden]{display:none}.vip-approve-dirty{background:#fbbf24;color:#422006}.vip-task{margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:11px;background:var(--soft)}.vip-task-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.vip-task-status{display:flex;align-items:center;gap:6px;color:#16803c;font-size:11px;font-weight:800;text-transform:uppercase}.vip-task-status .vip-icon{width:11px;height:16px}.vip-task-copy{width:100%;margin-top:6px;padding:0;background:transparent;color:var(--text);cursor:pointer;font-weight:500;text-align:left;white-space:pre-wrap}.vip-task-actions{display:flex;justify-content:flex-end;gap:5px;margin-top:8px}.vip-task-actions button{padding:6px 8px;border-radius:8px;background:transparent;color:var(--text);cursor:pointer}.vip-task-actions button:hover{background:var(--border)}.vip-task-actions .vip-danger{color:var(--danger)}.vip-empty{color:var(--muted);padding:16px 2px 10px;text-align:center}
     .vip-modal-backdrop{pointer-events:auto;position:fixed;inset:0;display:none;place-items:center;background:rgba(12,14,16,.28)}.vip-modal-backdrop[data-open=true]{display:grid}.vip-modal{width:min(390px,calc(100vw - 32px));padding:20px;border:1px solid var(--border);border-radius:18px;background:var(--bg);box-shadow:var(--shadow)}.vip-modal h2{margin:0 0 8px;font-size:18px}.vip-modal p{margin:0;color:var(--muted)}.vip-modal-count{color:var(--blue);font-weight:600}.vip-modal .vip-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.vip-modal button{padding:9px 13px;border-radius:10px;background:var(--soft);color:var(--text);cursor:pointer}.vip-modal button.vip-confirm,.vip-modal button.vip-confirm:hover{background:var(--blue);color:#fff}
     .vip-settings-backdrop{pointer-events:auto;position:fixed;z-index:30;inset:0;display:none;place-items:center;padding:16px;background:rgba(15,23,42,.2)}.vip-shell[data-theme=dark] .vip-settings-backdrop{background:rgba(248,250,252,.11)}.vip-settings-backdrop[data-open=true]{display:grid}.vip-settings{width:min(420px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:18px;border:1px solid var(--border);border-radius:18px;background:var(--bg);box-shadow:0 24px 70px rgba(15,23,42,.25)}.vip-settings-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.vip-settings-header h2{margin:0;font-size:18px;line-height:24px}.vip-settings-close{display:grid;width:32px;height:32px;place-items:center;padding:0;border-radius:8px;background:transparent;color:var(--text);cursor:pointer}.vip-settings-close:hover{background:var(--soft)}.vip-settings-close .vip-icon{width:18px;height:18px}.vip-settings-group+.vip-settings-group{margin-top:20px;padding-top:18px;border-top:1px solid var(--border)}.vip-settings-group h3{margin:0 0 4px;font-size:13px;line-height:18px}.vip-settings-description{margin:0 0 12px;color:var(--muted);font-size:11px;line-height:16px}.vip-theme-options{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:4px;border-radius:12px;background:var(--soft)}.vip-theme-option{height:34px;padding:0 12px;border-radius:8px;background:transparent;color:var(--text);cursor:pointer}.vip-theme-option[data-selected=true]{background:var(--bg);box-shadow:0 1px 4px rgba(15,23,42,.12);color:var(--blue);font-weight:700}.vip-policy-options{display:grid;gap:8px}.vip-policy-option{display:grid;grid-template-columns:18px minmax(0,1fr);gap:10px;padding:12px;border:1px solid var(--border);border-radius:12px;background:transparent;color:var(--text);cursor:pointer;text-align:left}.vip-policy-option:hover{background:var(--soft)}.vip-policy-option[data-selected=true]{border-color:var(--blue);background:color-mix(in srgb,var(--blue) 8%,var(--bg))}.vip-policy-radio{display:grid;width:18px;height:18px;place-items:center;border:1.5px solid var(--muted);border-radius:999px}.vip-policy-option[data-selected=true] .vip-policy-radio{border:5px solid var(--blue)}.vip-policy-title{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;line-height:17px}.vip-recommended{padding:1px 6px;border-radius:999px;background:color-mix(in srgb,var(--blue) 14%,var(--bg));color:var(--blue);font-size:9px;line-height:14px}.vip-policy-copy{display:block;margin-top:2px;color:var(--muted);font-size:10px;line-height:15px}.vip-settings-note{margin:10px 0 0;color:var(--muted);font-size:10px;line-height:15px}
-    .vip-crop-layer{position:fixed;inset:0;display:none;pointer-events:none}.vip-crop-layer[data-open=true]{display:block}.vip-crop{pointer-events:auto;position:fixed;min-width:80px;min-height:80px;border:2px solid var(--blue);border-radius:4px;background:rgba(30,143,241,.04);box-shadow:0 0 0 9999px rgba(12,14,16,.18);cursor:move}.vip-crop-actions{pointer-events:auto;position:fixed;z-index:2;display:flex;gap:6px;padding:5px;border-radius:10px;background:#111827;box-shadow:0 8px 24px rgba(0,0,0,.3)}.vip-crop-actions button{padding:7px 10px;border-radius:7px;background:transparent;color:#fff;cursor:pointer}.vip-crop-actions button:last-child{background:var(--blue)}.vip-crop-handle{position:absolute;width:14px;height:14px;border:2px solid #fff;border-radius:3px;background:var(--blue)}.vip-crop-handle[data-handle=nw]{left:-8px;top:-8px;cursor:nwse-resize}.vip-crop-handle[data-handle=ne]{right:-8px;top:-8px;cursor:nesw-resize}.vip-crop-handle[data-handle=sw]{left:-8px;bottom:-8px;cursor:nesw-resize}.vip-crop-handle[data-handle=se]{right:-8px;bottom:-8px;cursor:nwse-resize}.vip-shell[data-capturing=true] .vip-toolbar,.vip-shell[data-capturing=true] .vip-composer,.vip-shell[data-capturing=true] .vip-panel,.vip-shell[data-capturing=true] .vip-highlight,.vip-shell[data-capturing=true] .vip-frame-box,.vip-shell[data-capturing=true] .vip-anchor-layer,.vip-shell[data-capturing=true] .vip-crop-layer,.vip-shell[data-capturing=true] .vip-tooltip,.vip-shell[data-capturing=true] .vip-toast{visibility:hidden!important}
+    .vip-crop-layer{position:fixed;inset:0;display:none;pointer-events:none}.vip-crop-layer[data-open=true]{display:block}.vip-crop{pointer-events:auto;position:fixed;min-width:80px;min-height:80px;border:2px solid var(--blue);border-radius:4px;background:rgba(30,143,241,.04);box-shadow:0 0 0 9999px rgba(12,14,16,.18);cursor:move}.vip-crop-actions{pointer-events:auto;position:fixed;z-index:2;display:flex;gap:6px;padding:5px;border-radius:10px;background:#111827;box-shadow:0 8px 24px rgba(0,0,0,.3)}.vip-crop-actions button{padding:7px 10px;border-radius:7px;background:transparent;color:#fff;cursor:pointer}.vip-crop-actions button:last-child{background:var(--blue)}.vip-crop-handle{position:absolute;width:14px;height:14px;border:2px solid #fff;border-radius:3px;background:var(--blue)}.vip-crop-handle[data-handle=nw]{left:-8px;top:-8px;cursor:nwse-resize}.vip-crop-handle[data-handle=ne]{right:-8px;top:-8px;cursor:nesw-resize}.vip-crop-handle[data-handle=sw]{left:-8px;bottom:-8px;cursor:nesw-resize}.vip-crop-handle[data-handle=se]{right:-8px;bottom:-8px;cursor:nwse-resize}.vip-shell[data-capturing=true] .vip-toolbar,.vip-shell[data-capturing=true] .vip-composer,.vip-shell[data-capturing=true] .vip-panel,.vip-shell[data-capturing=true] .vip-highlight,.vip-shell[data-capturing=true] .vip-frame-box,.vip-shell[data-capturing=true] .vip-element-inspector,.vip-shell[data-capturing=true] .vip-anchor-layer,.vip-shell[data-capturing=true] .vip-crop-layer,.vip-shell[data-capturing=true] .vip-tooltip,.vip-shell[data-capturing=true] .vip-toast{visibility:hidden!important}
     .vip-tooltip{pointer-events:none;position:fixed;display:none;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;background:#101214;color:#fff;box-shadow:0 7px 20px rgba(0,0,0,.25);font-size:12px;white-space:nowrap}.vip-shell[data-theme=dark] .vip-tooltip{background:#fff;color:#101214}.vip-tooltip[data-visible=true]{display:flex}.vip-tooltip kbd{padding:2px 5px;border:1px solid currentColor;border-radius:4px;font:10px/1.2 ui-monospace,"JetBrains Mono",SFMono-Regular,Menlo,monospace;opacity:.75}.vip-toast{position:absolute;left:50%;bottom:22px;transform:translateX(-50%) translateY(18px);opacity:0;padding:9px 13px;border-radius:999px;background:#101214;color:#fff;box-shadow:0 12px 36px rgba(0,0,0,.28);transition:.16s ease}.vip-toast[data-visible=true]{opacity:1;transform:translateX(-50%) translateY(0)}.vip-file-input{display:none}
     @media(max-width:900px){.vip-toolbar{gap:10px}.vip-brand{display:none}.vip-width-control{width:128px}.vip-width-control input{width:71px}}
   </style>
   <div class="vip-shell" data-theme="light">
-    <svg class="vip-canvas" aria-hidden="true"></svg><div class="vip-highlight"></div><div class="vip-frame-box"></div><div class="vip-anchor-layer"></div>
+    <svg class="vip-canvas" aria-hidden="true"></svg><div class="vip-highlight"></div><div class="vip-frame-box"></div><div class="vip-element-inspector"><div class="vip-element-inspector-row"><span data-inspector="tag"></span><span class="vip-element-inspector-value" data-inspector="size"></span></div><div class="vip-element-inspector-row"><span class="vip-element-inspector-label">цвет</span><span class="vip-element-inspector-value" data-inspector="color"></span></div><div class="vip-element-inspector-row"><span class="vip-element-inspector-label">шрифт</span><span class="vip-element-inspector-value vip-element-inspector-font" data-inspector="font"></span></div></div><div class="vip-anchor-layer"></div>
     <div class="vip-toolbar" data-layout="select" role="toolbar" aria-label="Visual Intent">
       <button class="vip-menu" data-action="settings" data-tooltip="Настройки">${icon("menu")}</button>
       <div class="vip-brand" data-drag-handle><div class="vip-brand-title">Visual Intent</div><div class="vip-brand-mode">Режим просмотра</div></div>
@@ -199,6 +200,11 @@ function bootOverlay(): void {
   const canvas = required<SVGSVGElement>(".vip-canvas");
   const highlight = required<HTMLElement>(".vip-highlight");
   const frameBox = required<HTMLElement>(".vip-frame-box");
+  const elementInspector = required<HTMLElement>(".vip-element-inspector");
+  const inspectorTag = required<HTMLElement>("[data-inspector='tag']");
+  const inspectorSize = required<HTMLElement>("[data-inspector='size']");
+  const inspectorColor = required<HTMLElement>("[data-inspector='color']");
+  const inspectorFont = required<HTMLElement>("[data-inspector='font']");
   const anchorLayer = required<HTMLElement>(".vip-anchor-layer");
   const composer = required<HTMLElement>(".vip-composer");
   const textarea = required<HTMLTextAreaElement>(".vip-composer textarea");
@@ -259,6 +265,7 @@ function bootOverlay(): void {
   let toastTimer: number | undefined;
   let historyBusy = false;
   let composerDragDepth = 0;
+  let hoveredInspectionElement: Element | null = null;
   const undoStack: HistoryCommand[] = [];
   const redoStack: HistoryCommand[] = [];
   const colors = [
@@ -348,6 +355,160 @@ function bootOverlay(): void {
       height: `${rect.height}px`,
     });
   }
+
+  function hideElementInspector(): void {
+    hoveredInspectionElement = null;
+    elementInspector.dataset.visible = "false";
+  }
+
+  function formatDimension(value: number): string {
+    const rounded = Math.round(value * 10) / 10;
+    return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  }
+
+  function colorChannelToHex(value: number): string {
+    return Math.round(Math.max(0, Math.min(1, value)) * 255)
+      .toString(16)
+      .padStart(2, "0");
+  }
+
+  function serializeHexColor(
+    red: number,
+    green: number,
+    blue: number,
+    alpha = 1,
+  ): string {
+    const rgb = [red, green, blue].map(colorChannelToHex).join("");
+    if (alpha >= 1) return `#${rgb}`;
+    return `#${rgb}${colorChannelToHex(alpha)}`;
+  }
+
+  function parseCssNumber(value: string, percentScale = 1): number {
+    if (value.endsWith("%"))
+      return (Number.parseFloat(value) / 100) * percentScale;
+    return Number.parseFloat(value);
+  }
+
+  function linearSrgbToSrgb(value: number): number {
+    return value <= 0.0031308
+      ? 12.92 * value
+      : 1.055 * Math.pow(value, 1 / 2.4) - 0.055;
+  }
+
+  function oklabToSrgb(
+    lightness: number,
+    a: number,
+    b: number,
+  ): [number, number, number] {
+    const lRoot = lightness + 0.3963377774 * a + 0.2158037573 * b;
+    const mRoot = lightness - 0.1055613458 * a - 0.0638541728 * b;
+    const sRoot = lightness - 0.0894841775 * a - 1.291485548 * b;
+    const l = lRoot ** 3;
+    const m = mRoot ** 3;
+    const s = sRoot ** 3;
+    return [
+      linearSrgbToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+      linearSrgbToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+      linearSrgbToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s),
+    ];
+  }
+
+  function formatCssColor(value: string): string {
+    if (value === "transparent") return "#00000000";
+    const functionMatch = value.match(/^([a-z]+)\((.*)\)$/i);
+    if (!functionMatch) return value;
+    const name = functionMatch[1]?.toLowerCase();
+    const [channelsRaw = "", alphaRaw] = functionMatch[2]!.split("/");
+    const channels = channelsRaw
+      .trim()
+      .split(/[\s,]+/)
+      .filter(Boolean);
+    const legacyAlpha =
+      (name === "rgb" || name === "rgba") && channels.length >= 4
+        ? channels[3]
+        : undefined;
+    const alpha = alphaRaw
+      ? parseCssNumber(alphaRaw.trim())
+      : legacyAlpha
+        ? parseCssNumber(legacyAlpha)
+        : 1;
+
+    if ((name === "rgb" || name === "rgba") && channels.length >= 3) {
+      const rgb = channels
+        .slice(0, 3)
+        .map((channel) =>
+          channel.endsWith("%")
+            ? parseCssNumber(channel)
+            : Number.parseFloat(channel) / 255,
+        );
+      return serializeHexColor(rgb[0]!, rgb[1]!, rgb[2]!, alpha);
+    }
+
+    if ((name === "oklab" || name === "oklch") && channels.length >= 3) {
+      const lightness = parseCssNumber(channels[0]!);
+      let a: number;
+      let b: number;
+      if (name === "oklch") {
+        const chroma = parseCssNumber(channels[1]!, 0.4);
+        const hue = (Number.parseFloat(channels[2]!) * Math.PI) / 180;
+        a = chroma * Math.cos(hue);
+        b = chroma * Math.sin(hue);
+      } else {
+        a = parseCssNumber(channels[1]!, 0.4);
+        b = parseCssNumber(channels[2]!, 0.4);
+      }
+      const rgb = oklabToSrgb(lightness, a, b);
+      return serializeHexColor(rgb[0], rgb[1], rgb[2], alpha);
+    }
+
+    if (name === "color" && channels[0]?.toLowerCase() === "srgb") {
+      const rgb = channels.slice(1, 4).map(Number);
+      if (rgb.length === 3)
+        return serializeHexColor(rgb[0]!, rgb[1]!, rgb[2]!, alpha);
+    }
+
+    return value;
+  }
+
+  function showElementInspector(element: Element, rect: DOMRect): void {
+    const computed = getComputedStyle(element);
+    inspectorTag.textContent = element.tagName.toLowerCase();
+    inspectorSize.textContent = `${formatDimension(rect.width)}×${formatDimension(rect.height)}`;
+    inspectorColor.textContent = formatCssColor(computed.color);
+    inspectorFont.textContent = `${computed.fontSize} ${computed.fontFamily.replace(/["']/g, "")}`;
+    inspectorFont.title = inspectorFont.textContent;
+    elementInspector.dataset.visible = "true";
+    const width = elementInspector.offsetWidth || 240;
+    const height = elementInspector.offsetHeight || 76;
+    const gap = 8;
+    const left = Math.max(
+      8,
+      Math.min(rect.left, window.innerWidth - width - 8),
+    );
+    let top: number;
+    let placement: "above" | "below" | "over";
+    if (rect.top >= height + gap) {
+      top = rect.top - height - gap;
+      placement = "above";
+    } else if (window.innerHeight - rect.bottom >= height + gap) {
+      top = rect.bottom + gap;
+      placement = "below";
+    } else {
+      top = Math.max(
+        8,
+        Math.min(rect.top + 8, window.innerHeight - height - 8),
+      );
+      placement = "over";
+    }
+    const anchorX = Math.max(
+      14,
+      Math.min(rect.left + Math.min(50, rect.width / 2) - left, width - 14),
+    );
+    elementInspector.dataset.placement = placement;
+    elementInspector.style.left = `${left}px`;
+    elementInspector.style.top = `${top}px`;
+    elementInspector.style.setProperty("--inspector-anchor-x", `${anchorX}px`);
+  }
   const surfaceToViewport = (rect: Rect): Rect => ({
     ...rect,
     x: rect.x - window.scrollX,
@@ -372,6 +533,7 @@ function bootOverlay(): void {
 
   function setMode(next: Mode): void {
     mode = next;
+    if (next !== "select" && next !== "figma") hideElementInspector();
     toolbar.dataset.layout =
       next === "pencil" || next === "square" ? "draw" : "select";
     modeLabel.textContent = (
@@ -700,10 +862,22 @@ function bootOverlay(): void {
   document.addEventListener(
     "pointermove",
     (event) => {
-      if ((mode !== "select" && mode !== "figma") || isOverlayEvent(event))
+      if (mode !== "select" && mode !== "figma") return;
+      if (isOverlayEvent(event)) {
+        displayRect(highlight, null);
+        hideElementInspector();
         return;
+      }
       const element = event.target instanceof Element ? event.target : null;
-      if (element) displayRect(highlight, element.getBoundingClientRect());
+      if (!element) {
+        displayRect(highlight, null);
+        hideElementInspector();
+        return;
+      }
+      hoveredInspectionElement = element;
+      const rect = element.getBoundingClientRect();
+      displayRect(highlight, rect);
+      showElementInspector(element, rect);
     },
     true,
   );
@@ -2552,6 +2726,11 @@ function bootOverlay(): void {
 
   function refreshPositions(): void {
     renderDrawings();
+    if (hoveredInspectionElement && (mode === "select" || mode === "figma")) {
+      const hoveredRect = hoveredInspectionElement.getBoundingClientRect();
+      displayRect(highlight, hoveredRect);
+      showElementInspector(hoveredInspectionElement, hoveredRect);
+    }
     const rect = currentTargetRect();
     if (rect && targetContext) {
       targetContext.rect = rect;

@@ -140,6 +140,16 @@ describe("createOverlayScript", () => {
     expect(script).toContain("cancelComposerDraft");
     expect(script).toContain("restoreComposerDraft");
     expect(script).toContain('else if (mode !== "idle") enterNeutralMode()');
+    expect(script).toContain('class="vip-element-inspector"');
+    expect(script).toContain("function showElementInspector(element, rect)");
+    expect(script).toContain("function oklabToSrgb(");
+    expect(script).toContain('name === "oklab" || name === "oklch"');
+    expect(script).toContain("element.tagName.toLowerCase()");
+    expect(script).toContain('data-inspector="size"');
+    expect(script).toContain('data-inspector="color"');
+    expect(script).toContain('data-inspector="font"');
+    expect(script).toContain('next !== "select" && next !== "figma"');
+    expect(script).toContain("window.innerHeight - rect.bottom");
     expect(script).toContain("event.stopImmediatePropagation()");
     expect(script).not.toContain('class="vip-target"');
     expect(script).not.toContain("vip-task-target");

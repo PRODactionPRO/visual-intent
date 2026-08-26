@@ -1,4 +1,4 @@
-import type { ReferenceTask } from "./types.js";
+import type { CapturedReference, ReferenceTask } from "./types.js";
 
 const MAX_NODES = 40;
 const MAX_TEXT_LENGTH = 500;
@@ -69,16 +69,6 @@ const STYLE_PROPERTIES = [
   "animation",
   "cursor",
 ] as const;
-
-export interface CapturedReference {
-  surface: Record<string, unknown>;
-  nodes: Array<Record<string, unknown>>;
-  regions: Array<Record<string, unknown>>;
-  frames: Array<Record<string, unknown>>;
-  relations: Array<Record<string, unknown>>;
-  rootNodeId: string;
-  regionId: string;
-}
 
 export function captureReference(element: Element): CapturedReference {
   const surfaceId = crypto.randomUUID();

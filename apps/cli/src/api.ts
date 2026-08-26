@@ -1,13 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
+  BatchClaimConflictError,
   BatchNotFoundError,
   BatchStateConflictError,
+  ExecutorThreadConflictError,
+  InvalidUsageProvenanceError,
   ProjectSettingsRevisionConflictError,
   RepositoryMismatchError,
   RevisionConflictError,
   SessionNotConfiguredError,
   TaskNotFoundError,
+  TaskAlreadyReviewedError,
   TaskStateConflictError,
   type TaskStore,
 } from "@visual-intent/core";
@@ -16,11 +20,15 @@ import {
   AttachExecutorSchema,
   CreateTaskSchema,
   FinishBatchSchema,
+  RateTaskSchema,
+  RetryBatchSchema,
+  ReviewTaskSchema,
   TaskStatusSchema,
   UpdateProjectSettingsSchema,
   UpdateTaskSchema,
+  VisualIntentEventTypeSchema,
 } from "@visual-intent/protocol";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 
 import type { ProjectAttachmentStore } from "./attachment-store.js";
 
@@ -28,6 +36,26 @@ const BODY_LIMIT_BYTES = 1024 * 1024;
 const ATTACHMENT_LIMIT_BYTES = 10 * 1024 * 1024;
 
 class InvalidAttachmentRequestError extends Error {}
+
+class VisualIntentOwnedBatchError extends Error {
+  constructor(id: string) {
+    super(
+      `Batch ${id} belongs to the local Visual Intent SDK worker and cannot be claimed or finished by a host-attached agent`,
+    );
+    this.name = "VisualIntentOwnedBatchError";
+  }
+}
+
+async function assertHostControlledBatch(
+  store: TaskStore,
+  id: string,
+): Promise<void> {
+  const batch = await store.getBatch(id);
+  if (!batch) throw new BatchNotFoundError(id);
+  if (batch.executorOwnership === "visual-intent-owned") {
+    throw new VisualIntentOwnedBatchError(id);
+  }
+}
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   const serialized = JSON.stringify(body);
@@ -37,6 +65,11 @@ function json(response: ServerResponse, status: number, body: unknown): void {
     "content-type": "application/json; charset=utf-8",
   });
   response.end(serialized);
+}
+
+function controllerThreadHeader(request: IncomingMessage): string | undefined {
+  const value = request.headers["x-visual-intent-controller-thread"];
+  return Array.isArray(value) ? value[0] : value;
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
@@ -233,6 +266,42 @@ export async function handleApiRequest(
 
     if (
       request.method === "GET" &&
+      url.pathname === "/_visual-intent/api/events"
+    ) {
+      const rawSince = url.searchParams.get("since");
+      const rawType = url.searchParams.get("type");
+      json(
+        response,
+        200,
+        await store.listEvents({
+          ...(rawSince ? { since: z.iso.datetime().parse(rawSince) } : {}),
+          ...(rawType
+            ? { type: VisualIntentEventTypeSchema.parse(rawType) }
+            : {}),
+        }),
+      );
+      return true;
+    }
+
+    if (
+      request.method === "GET" &&
+      url.pathname === "/_visual-intent/api/executions"
+    ) {
+      const rawSince = url.searchParams.get("since");
+      const batchId = url.searchParams.get("batchId");
+      json(
+        response,
+        200,
+        await store.listExecutions({
+          ...(rawSince ? { since: z.iso.datetime().parse(rawSince) } : {}),
+          ...(batchId ? { batchId } : {}),
+        }),
+      );
+      return true;
+    }
+
+    if (
+      request.method === "GET" &&
       url.pathname === "/_visual-intent/api/tasks"
     ) {
       const rawStatus = url.searchParams.get("status");
@@ -319,6 +388,7 @@ export async function handleApiRequest(
     ) {
       const retried = await store.retryBatch(
         decodeURIComponent(batchActionMatch[1]),
+        RetryBatchSchema.parse(await readJson(request)),
       );
       onTaskChanged({ type: "batch.retried", ...retried });
       options.onBatchReady?.(retried.batch.id);
@@ -330,9 +400,11 @@ export async function handleApiRequest(
       batchActionMatch[2] === "claim" &&
       request.method === "POST"
     ) {
-      const claimed = await store.claimBatch(
-        decodeURIComponent(batchActionMatch[1]),
-      );
+      const id = decodeURIComponent(batchActionMatch[1]);
+      await assertHostControlledBatch(store, id);
+      const claimed = await store.claimBatch(id, {
+        controllerThreadId: controllerThreadHeader(request),
+      });
       onTaskChanged({ type: "batch.in_progress", ...claimed });
       json(response, 200, claimed);
       return true;
@@ -344,12 +416,23 @@ export async function handleApiRequest(
       request.method === "POST"
     ) {
       const input = FinishBatchSchema.parse(await readJson(request));
-      const finished = await store.finishBatch(
-        decodeURIComponent(batchActionMatch[1]),
-        input.status,
-        input.result,
-      );
-      onTaskChanged({ type: `batch.${input.status}`, ...finished });
+      const id = decodeURIComponent(batchActionMatch[1]);
+      await assertHostControlledBatch(store, id);
+      const headerThreadId = controllerThreadHeader(request);
+      if (
+        input.claim.controllerThreadId &&
+        input.claim.controllerThreadId !== headerThreadId
+      ) {
+        throw new BatchClaimConflictError(
+          id,
+          "controller thread in the body does not match the authenticated MCP process",
+        );
+      }
+      const finished = await store.finishBatch(id, input.status, input.result, {
+        ...input.claim,
+        ...(headerThreadId ? { controllerThreadId: headerThreadId } : {}),
+      });
+      onTaskChanged({ type: `batch.${finished.batch.status}`, ...finished });
       json(response, 200, finished);
       return true;
     }
@@ -365,6 +448,46 @@ export async function handleApiRequest(
     }
 
     const match = url.pathname.match(/^\/_visual-intent\/api\/tasks\/([^/]+)$/);
+    const reviewMatch = url.pathname.match(
+      /^\/_visual-intent\/api\/tasks\/([^/]+)\/review$/,
+    );
+    const ratingMatch = url.pathname.match(
+      /^\/_visual-intent\/api\/tasks\/([^/]+)\/rating$/,
+    );
+    if (ratingMatch?.[1] && request.method === "PUT") {
+      const task = await store.rate(
+        decodeURIComponent(ratingMatch[1]),
+        RateTaskSchema.parse(await readJson(request)),
+      );
+      onTaskChanged({ type: "task.rated", task });
+      json(response, 200, task);
+      return true;
+    }
+    if (reviewMatch?.[1] && request.method === "POST") {
+      const input = ReviewTaskSchema.parse(await readJson(request));
+      const attachments = input.revision?.attachments ?? [];
+      if (attachments.length > 0) {
+        const attachmentStore = options.attachmentStore;
+        if (!attachmentStore) {
+          throw new InvalidAttachmentRequestError(
+            "Attachment storage is unavailable",
+          );
+        }
+        await Promise.all(
+          attachments.map((attachment) =>
+            attachmentStore.assertOwned(attachment),
+          ),
+        );
+      }
+      const reviewed = await store.review(
+        decodeURIComponent(reviewMatch[1]),
+        input,
+      );
+      onTaskChanged({ type: "task.reviewed", ...reviewed });
+      json(response, 200, reviewed);
+      return true;
+    }
+
     if (match?.[1] && request.method === "GET") {
       const task = await store.get(decodeURIComponent(match[1]));
       if (!task) throw new TaskNotFoundError(match[1]);
@@ -412,13 +535,18 @@ export async function handleApiRequest(
       json(response, 404, { error: error.message });
     } else if (
       error instanceof SessionNotConfiguredError ||
-      error instanceof RepositoryMismatchError
+      error instanceof RepositoryMismatchError ||
+      error instanceof ExecutorThreadConflictError ||
+      error instanceof VisualIntentOwnedBatchError
     ) {
       json(response, 409, { error: error.message });
     } else if (
       error instanceof BatchStateConflictError ||
+      error instanceof BatchClaimConflictError ||
+      error instanceof InvalidUsageProvenanceError ||
       error instanceof ProjectSettingsRevisionConflictError ||
       error instanceof RevisionConflictError ||
+      error instanceof TaskAlreadyReviewedError ||
       error instanceof TaskStateConflictError
     ) {
       json(response, 409, { error: error.message });

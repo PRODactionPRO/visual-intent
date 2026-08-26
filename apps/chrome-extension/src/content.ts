@@ -1,16 +1,14 @@
-import {
-  captureReference,
-  createReferenceTask,
-  type CapturedReference,
-} from "./reference.js";
+import { captureReference, createReferenceTask } from "./reference.js";
 import {
   inspectElement,
   positionElementInspector,
 } from "./element-inspector.js";
 import type {
   BridgeSession,
+  CapturedReference,
   ExtensionResponse,
   PendingAttachment,
+  ReferenceAnchorRect,
 } from "./types.js";
 
 declare global {
@@ -25,8 +23,10 @@ if (!window.__visualIntentReferenceInstalled) {
 }
 
 function installContentAdapter(): void {
+  const isTopFrame = window.top === window;
   let session: BridgeSession | undefined;
   let active = false;
+  let announcedFrameActivity = false;
   let hovered: Element | undefined;
   let reference: CapturedReference | undefined;
   let attachments: PendingAttachment[] = [];
@@ -82,14 +82,43 @@ function installContentAdapter(): void {
   shadow.append(style, highlight, inspector, hint, composer, toast);
 
   chrome.runtime.onMessage.addListener((message: unknown) => {
-    const candidate = message as { type?: string; session?: BridgeSession };
+    const candidate = message as {
+      type?: string;
+      session?: BridgeSession;
+      preserveHighlight?: boolean;
+      reference?: CapturedReference;
+      anchor?: ReferenceAnchorRect;
+      sourceFrameId?: number;
+    };
     if (
-      candidate.type !== "visual-intent:start-selection" ||
-      !candidate.session
-    )
+      candidate.type === "visual-intent:start-selection" &&
+      candidate.session
+    ) {
+      session = candidate.session;
+      startSelection();
       return;
-    session = candidate.session;
-    startSelection();
+    }
+    if (candidate.type === "visual-intent:clear-hover") {
+      clearHover();
+      return;
+    }
+    if (candidate.type === "visual-intent:stop-selection") {
+      stopLocalSelection(candidate.preserveHighlight === true);
+      return;
+    }
+    if (
+      candidate.type === "visual-intent:open-reference" &&
+      isTopFrame &&
+      candidate.reference &&
+      candidate.anchor
+    ) {
+      reference = candidate.reference;
+      openComposer(
+        candidate.sourceFrameId === 0
+          ? candidate.anchor
+          : centeredComposerAnchor(),
+      );
+    }
   });
 
   document.addEventListener("mousemove", onMove, true);
@@ -127,6 +156,7 @@ function installContentAdapter(): void {
 
   function startSelection(): void {
     closeComposer();
+    announcedFrameActivity = false;
     hovered = undefined;
     highlight.style.display = "none";
     hideInspector();
@@ -134,13 +164,16 @@ function installContentAdapter(): void {
       ? "dark"
       : "light";
     active = true;
-    hint.style.display = "block";
+    hint.style.display = isTopFrame ? "block" : "none";
     document.documentElement.style.cursor = "crosshair";
   }
 
   function onMove(event: MouseEvent): void {
     if (!active) return;
-    const target = event.target;
+    announceFrameActivity();
+    const target = event
+      .composedPath()
+      .find((candidate): candidate is Element => candidate instanceof Element);
     if (
       !(target instanceof Element) ||
       target === host ||
@@ -202,17 +235,31 @@ function installContentAdapter(): void {
     inspector.dataset.visible = "false";
   }
 
+  function announceFrameActivity(): void {
+    if (announcedFrameActivity) return;
+    announcedFrameActivity = true;
+    void chrome.runtime.sendMessage({ type: "bridge:frame-active" });
+  }
+
+  function clearHover(): void {
+    announcedFrameActivity = false;
+    hovered = undefined;
+    highlight.style.display = "none";
+    hideInspector();
+  }
+
   function onClick(event: MouseEvent): void {
     if (!active || !hovered) return;
     event.preventDefault();
     event.stopPropagation();
     event.stopImmediatePropagation();
-    reference = captureReference(hovered);
+    const selected = captureReference(hovered);
+    const anchor = plainRect(hovered.getBoundingClientRect());
     active = false;
     document.documentElement.style.cursor = "";
     hint.style.display = "none";
     hideInspector();
-    openComposer(hovered.getBoundingClientRect());
+    void transferReference(selected, anchor);
   }
 
   function onKeyDown(event: KeyboardEvent): void {
@@ -220,14 +267,7 @@ function installContentAdapter(): void {
     if (!active && composer.style.display !== "block") return;
     event.preventDefault();
     event.stopPropagation();
-    active = false;
-    hovered = undefined;
-    reference = undefined;
-    document.documentElement.style.cursor = "";
-    highlight.style.display = "none";
-    hideInspector();
-    hint.style.display = "none";
-    closeComposer();
+    void finishSelection();
   }
 
   function onPasteCapture(event: ClipboardEvent): void {
@@ -242,7 +282,7 @@ function installContentAdapter(): void {
     void addFiles(files);
   }
 
-  function openComposer(rect: DOMRect): void {
+  function openComposer(rect: ReferenceAnchorRect): void {
     project.textContent = `В проект: ${session?.displayName ?? "Visual Intent"}`;
     composer.style.display = "block";
     const width = Math.min(380, innerWidth - 24);
@@ -254,6 +294,47 @@ function installContentAdapter(): void {
     composer.style.left = `${left}px`;
     composer.style.top = `${top}px`;
     input.focus();
+  }
+
+  async function transferReference(
+    selected: CapturedReference,
+    anchor: ReferenceAnchorRect,
+  ): Promise<void> {
+    if (!session) return;
+    try {
+      const response = (await chrome.runtime.sendMessage({
+        type: "bridge:frame-capture",
+        sessionId: session.id,
+        reference: selected,
+        anchor,
+      })) as ExtensionResponse;
+      if (!response.ok)
+        throw new Error(response.error ?? "Не удалось передать компонент");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
+      startSelection();
+    }
+  }
+
+  async function finishSelection(): Promise<void> {
+    stopLocalSelection(false);
+    try {
+      await chrome.runtime.sendMessage({ type: "bridge:finish-selection" });
+    } catch {
+      // Локальная очистка уже выполнена; другие фреймы сбросятся при новом запуске.
+    }
+  }
+
+  function stopLocalSelection(preserveHighlight: boolean): void {
+    active = false;
+    announcedFrameActivity = false;
+    hovered = undefined;
+    reference = undefined;
+    document.documentElement.style.cursor = "";
+    if (!preserveHighlight) highlight.style.display = "none";
+    hideInspector();
+    hint.style.display = "none";
+    closeComposer();
   }
 
   function closeComposer(): void {
@@ -327,6 +408,7 @@ function installContentAdapter(): void {
       reference = undefined;
       closeComposer();
       showToast(`Задача добавлена в ${session.displayName}`);
+      await finishSelection();
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error));
       save.disabled = false;
@@ -342,6 +424,30 @@ function installContentAdapter(): void {
       toast.style.display = "none";
     }, 3200);
   }
+}
+
+function plainRect(rect: DOMRect): ReferenceAnchorRect {
+  return {
+    left: rect.left,
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function centeredComposerAnchor(): ReferenceAnchorRect {
+  const left = Math.max(12, innerWidth / 2 - 190);
+  const top = Math.max(12, innerHeight / 2 - 90);
+  return {
+    left,
+    top,
+    right: left + 1,
+    bottom: top + 1,
+    width: 1,
+    height: 1,
+  };
 }
 
 function div(className: string, text?: string): HTMLDivElement {

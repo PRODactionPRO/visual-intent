@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TaskStore } from "@visual-intent/core";
 
@@ -27,6 +27,18 @@ const store: TaskStore = {
   },
   async delete() {
     throw new Error("not used");
+  },
+  async review() {
+    throw new Error("not used");
+  },
+  async rate() {
+    throw new Error("not used");
+  },
+  async listEvents() {
+    return [];
+  },
+  async listExecutions() {
+    return [];
   },
   async getSettings() {
     return {
@@ -130,5 +142,37 @@ describe("local daemon", () => {
       service: "visual-intent",
       mode: "local",
     });
+  });
+
+  it("re-enqueues a persisted autonomous Apply batch after daemon restart", async () => {
+    const queuedBatch = {
+      id: "batch-restart",
+      sessionId: "session-restart",
+      taskIds: ["task-restart"],
+      attempt: 1,
+      status: "queued" as const,
+      executorOwnership: "visual-intent-owned" as const,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+    };
+    const enqueue = vi.fn();
+    const recoveryStore: TaskStore = {
+      ...store,
+      async listBatches() {
+        return [queuedBatch];
+      },
+    };
+
+    const daemon = await startDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      target: "http://127.0.0.1:5173",
+      store: recoveryStore,
+      createDispatcher: () => ({ enqueue }),
+    });
+    closers.push(() => daemon.close());
+
+    expect(enqueue).toHaveBeenCalledOnce();
+    expect(enqueue).toHaveBeenCalledWith(queuedBatch);
   });
 });

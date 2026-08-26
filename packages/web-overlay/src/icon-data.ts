@@ -1,5 +1,6 @@
 import {
   Check,
+  ChevronDown,
   Component,
   Eraser,
   ListTodo,
@@ -12,6 +13,8 @@ import {
   SlidersHorizontal,
   Square,
   SquareDashed,
+  Star,
+  Trash2,
   Undo2,
   X,
   type IconNode,
@@ -60,4 +63,7 @@ export const ICONS = {
   paperclip: renderLucideIcon(Paperclip),
   check: renderLucideIcon(Check),
   close: renderLucideIcon(X),
+  chevronDown: renderLucideIcon(ChevronDown),
+  star: renderLucideIcon(Star),
+  trash: renderLucideIcon(Trash2),
 } as const;

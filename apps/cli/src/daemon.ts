@@ -95,6 +95,13 @@ export async function startDaemon(
     });
   };
   const dispatcher = options.createDispatcher?.(broadcast);
+  const pendingBatches = await options.store.listBatches();
+  pendingBatches
+    .filter(
+      (batch) =>
+        batch.status === "queued" || batch.status === "waiting_for_executor",
+    )
+    .forEach((batch) => dispatcher?.enqueue(batch));
   const enqueueBatch = (batchId: string): void => {
     void options.store.getBatch(batchId).then((batch) => {
       if (batch) dispatcher?.enqueue(batch);

@@ -1,5 +1,154 @@
 import { ICONS } from "./icon-data.js";
 
+export type TaskUsageAllocationSignal = {
+  id: string;
+  categories?: string[];
+  scale?: string;
+  changedFiles?: string[];
+};
+
+export type TaskUsageAllocationTotals = {
+  input: number;
+  cached: number;
+  cacheWrite: number;
+  output: number;
+  reasoning: number;
+  costMicros?: number;
+};
+
+export type EstimatedTaskUsageAllocation = TaskUsageAllocationTotals & {
+  total: number;
+  share: number;
+  weight: number;
+};
+
+export function allocateEstimatedTaskUsage(
+  totals: TaskUsageAllocationTotals,
+  tasks: TaskUsageAllocationSignal[],
+): Record<string, EstimatedTaskUsageAllocation> {
+  if (!tasks.length) return {};
+
+  const scalePoints: Record<string, number> = {
+    element: 0,
+    region: 1,
+    screen: 2,
+    "multi-screen": 3,
+    system: 4,
+    unknown: 1,
+  };
+  const categoryPoints: Record<string, number> = {
+    style: 0,
+    text: 0,
+    image: 0,
+    layout: 0.5,
+    figma: 0.5,
+    behavior: 1,
+    bug: 1,
+    unknown: 0.25,
+  };
+  const median = (values: Array<number | undefined>): number => {
+    const known = values
+      .filter((value): value is number => value !== undefined)
+      .sort((left, right) => left - right);
+    if (!known.length) return 0;
+    const middle = Math.floor(known.length / 2);
+    return known.length % 2
+      ? known[middle]!
+      : (known[middle - 1]! + known[middle]!) / 2;
+  };
+  const scaleSignals = tasks.map((task) =>
+    task.scale && task.scale !== "unknown"
+      ? scalePoints[task.scale]
+      : undefined,
+  );
+  const categorySignals = tasks.map((task) => {
+    const known = (task.categories ?? [])
+      .filter((value) => value !== "unknown")
+      .map((value) => categoryPoints[value])
+      .filter((value): value is number => value !== undefined);
+    return known.length ? Math.max(...known) : undefined;
+  });
+  const footprintSignals = tasks.map((task) =>
+    task.changedFiles
+      ? Math.log2(1 + new Set(task.changedFiles).size)
+      : undefined,
+  );
+  const scaleFallback = median(scaleSignals);
+  const categoryFallback = median(categorySignals);
+  const footprintFallback = median(footprintSignals);
+  const weights = tasks.map(
+    (_, index) =>
+      1 +
+      (scaleSignals[index] ?? scaleFallback) +
+      (categorySignals[index] ?? categoryFallback) +
+      (footprintSignals[index] ?? footprintFallback),
+  );
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+
+  function distribute(total: number): number[] {
+    const safeTotal = Math.max(0, Math.round(total));
+    const raw = weights.map((weight) => (safeTotal * weight) / totalWeight);
+    const values = raw.map(Math.floor);
+    let remainder = safeTotal - values.reduce((sum, value) => sum + value, 0);
+    const order = raw
+      .map((value, index) => ({ index, fraction: value - values[index]! }))
+      .sort(
+        (left, right) =>
+          right.fraction - left.fraction || left.index - right.index,
+      );
+    for (let index = 0; remainder > 0; index += 1, remainder -= 1) {
+      values[order[index % order.length]!.index]! += 1;
+    }
+    return values;
+  }
+
+  const safeInput = Math.max(0, Math.round(totals.input));
+  const safeCached = Math.min(
+    safeInput,
+    Math.max(0, Math.round(totals.cached)),
+  );
+  const safeCacheWrite = Math.min(
+    safeInput - safeCached,
+    Math.max(0, Math.round(totals.cacheWrite)),
+  );
+  const uncached = distribute(safeInput - safeCached - safeCacheWrite);
+  const cached = distribute(safeCached);
+  const cacheWrite = distribute(safeCacheWrite);
+  const safeOutput = Math.max(0, Math.round(totals.output));
+  const safeReasoning = Math.min(
+    safeOutput,
+    Math.max(0, Math.round(totals.reasoning)),
+  );
+  const reasoning = distribute(safeReasoning);
+  const nonReasoning = distribute(safeOutput - safeReasoning);
+  const costMicros =
+    totals.costMicros === undefined ? undefined : distribute(totals.costMicros);
+
+  return Object.fromEntries(
+    tasks.map((task, index) => {
+      const taskCached = cached[index] ?? 0;
+      const taskCacheWrite = cacheWrite[index] ?? 0;
+      const taskInput = (uncached[index] ?? 0) + taskCached + taskCacheWrite;
+      const taskReasoning = reasoning[index] ?? 0;
+      const taskOutput = (nonReasoning[index] ?? 0) + taskReasoning;
+      return [
+        task.id,
+        {
+          input: taskInput,
+          cached: taskCached,
+          cacheWrite: taskCacheWrite,
+          output: taskOutput,
+          reasoning: taskReasoning,
+          ...(costMicros ? { costMicros: costMicros[index] ?? 0 } : {}),
+          total: taskInput + taskOutput,
+          share: weights[index]! / totalWeight,
+          weight: weights[index]!,
+        },
+      ];
+    }),
+  );
+}
+
 function bootOverlay(): void {
   if (document.getElementById("visual-intent-overlay-root")) return;
 
@@ -35,8 +184,62 @@ function bootOverlay(): void {
     createdAt: string;
   };
   type TaskKind = "code-change" | "figma-component";
+  type TaskTab = "backlog" | "in-progress" | "ready";
+  type ReviewOutcome = "accepted" | "needs_revision" | "not_accepted";
+  type BatchUsage =
+    | {
+        availability: "reported";
+        capture: "direct" | "host-reported";
+        provider?: string;
+        source: string;
+        scope: "apply-batch-turn";
+        exact: true;
+        model?: string;
+        reasoningPolicy?: string;
+        adapterVersion?: string;
+        tokens: {
+          inputTokens: number;
+          cachedInputTokens: number;
+          cacheWriteInputTokens: number;
+          outputTokens: number;
+          reasoningOutputTokens: number;
+        };
+        apiEquivalentCost?:
+          | {
+              availability: "calculated";
+              kind: "openai-api-equivalent";
+              scope: "apply-batch-turn";
+              model: string;
+              reasoningPolicy?: string;
+              amountUsd: string;
+              billableTokens: {
+                uncachedInputTokens: number;
+                cachedInputTokens: number;
+                cacheWriteInputTokens: number;
+                outputTokens: number;
+              };
+              pricingSnapshot: {
+                id: string;
+                capturedAt: string;
+                sourceUrl: string;
+                currency: "USD";
+                serviceTier: "standard";
+                contextTierAssumption: "up-to-272k-input-per-request";
+                inputUsdPerMillion: string;
+                cachedInputUsdPerMillion: string;
+                cacheWriteInputUsdPerMillion: string;
+                outputUsdPerMillion: string;
+                promotionalThrough?: string;
+              };
+              reasoningIncludedInOutput: true;
+              estimateBasis: "aggregate-turn-short-context";
+            }
+          | { availability: "unavailable"; reason: string };
+      }
+    | { availability: "unavailable"; reason: string };
   type OverlayTask = {
     id: string;
+    displayNumber?: number;
     kind: TaskKind;
     status: string;
     revision: number;
@@ -54,6 +257,29 @@ function bootOverlay(): void {
     relations: Array<Record<string, unknown>>;
     annotations: Array<Record<string, unknown>>;
     attachments: Attachment[];
+    batchId?: string;
+    iterationId: string;
+    rootTaskId: string;
+    previousTaskId?: string;
+    round: number;
+    review?: {
+      outcome: ReviewOutcome;
+      reviewedAt: string;
+      note?: string;
+      followUpTaskId?: string;
+    };
+    rating?: { value: number; ratedAt: string };
+    createdAt: string;
+    updatedAt: string;
+    result?: {
+      summary: string;
+      changedFiles: string[];
+      notes: string[];
+      classification?: {
+        categories: string[];
+        scale: string;
+      };
+    };
   };
   type OverlaySession = {
     displayName: string;
@@ -69,18 +295,54 @@ function bootOverlay(): void {
     id: string;
     status: string;
     taskIds: string[];
+    attempt?: number;
+    executorOwnership?: "host-attached" | "visual-intent-owned";
+    createdAt: string;
+    updatedAt: string;
+    startedAt?: string;
+    completedAt?: string;
     workingTreeBaseline?: {
       fingerprint: string;
       files: Array<{ path: string; status: string }>;
     };
     result?: {
+      executionId?: string;
       summary: string;
       batchChangedFiles?: string[];
       preExistingDirtyFiles?: string[];
       technicalDetails?: string;
       retryable?: boolean;
       failureCode?: string;
+      usage?: BatchUsage;
     };
+  };
+  type OverlayExecution = {
+    id: string;
+    batchId: string;
+    attempt: number;
+    taskIds: string[];
+    model?: string;
+    reasoningPolicy?: string;
+    startedAt: string;
+    completedAt: string;
+    durationMs: number;
+    usage: BatchUsage;
+  };
+  type OverlayTaskGroup = {
+    id: string;
+    batch?: OverlayBatch;
+    tasks: OverlayTask[];
+  };
+  type FormattedBatchUsage = {
+    label: string;
+    totalLabel: string;
+    costLabel: string;
+    tokenLabel: string;
+    tokenParts: string[];
+    partial: boolean;
+    estimated: boolean;
+    title: string;
+    raw?: TaskUsageAllocationTotals & { total: number };
   };
   type DirtyWorktreePolicy = "allow-host-attached" | "require-confirmation";
   type OverlayProjectSettings = {
@@ -96,6 +358,7 @@ function bootOverlay(): void {
     attachments: Attachment[];
     placementRect?: Rect;
     editingTask?: OverlayTask;
+    revisionSourceTask?: OverlayTask;
   };
   type HistoryCommand = {
     undo(): void | Promise<void>;
@@ -154,10 +417,12 @@ function bootOverlay(): void {
     .vip-attachments{display:flex;gap:4px;overflow:hidden;padding:6px 8px}.vip-attachments:empty{display:none}.vip-attachment{position:relative;width:80px;height:80px;flex:0 0 80px;overflow:hidden;border-radius:8px;background:#d9d9d9}.vip-attachment img{width:100%;height:100%;object-fit:cover}.vip-attachment-file{display:grid;height:100%;place-items:center;padding:6px;color:var(--text);font-size:10px;text-align:center;overflow-wrap:anywhere}.vip-attachment-remove{position:absolute;top:4px;right:4px;display:none;width:20px;height:20px;place-items:center;padding:0;border-radius:999px;background:rgba(12,14,16,.82);color:#fff;cursor:pointer;font-size:14px}.vip-attachment:hover .vip-attachment-remove,.vip-attachment:focus-within .vip-attachment-remove{display:grid}
     .vip-attachment-menu{position:absolute;z-index:4;top:calc(100% + 8px);right:-152px;display:none;width:200px;padding:9px 8px;border:1px solid var(--border);border-radius:16px;background:var(--bg);box-shadow:0 12px 36px rgba(15,23,42,.3)}.vip-attachment-menu[data-open=true]{display:flex;flex-direction:column;gap:4px}.vip-attachment-menu button{display:flex;width:184px;height:26px;align-items:center;gap:8px;padding:4px 8px;border-radius:8px;background:transparent;color:var(--text);cursor:pointer;font:500 12px/17px Manrope,Inter,sans-serif;letter-spacing:-.01px;text-align:left}.vip-attachment-menu button:hover{background:var(--soft)}.vip-attachment-menu .vip-icon{width:16px;height:16px}
     .vip-drop-overlay{position:absolute;z-index:5;inset:0;display:none;place-items:center;padding:16px;border:2px dashed var(--blue);border-radius:25px;background:color-mix(in srgb,var(--bg) 92%,var(--blue));color:var(--text);font-size:13px;font-weight:600;text-align:center}.vip-composer[data-drag-active=true] .vip-drop-overlay{display:grid}.vip-composer[data-drag-active=true]>.vip-attachments,.vip-composer[data-drag-active=true]>.vip-composer-main{visibility:hidden}
-    .vip-panel{pointer-events:auto;position:absolute;top:98px;right:18px;display:none;width:min(420px,calc(100vw - 36px));max-height:calc(100vh - 118px);overflow:auto;padding:14px;border:1px solid var(--border);border-radius:18px;background:var(--bg);box-shadow:var(--shadow)}.vip-panel[data-open=true]{display:block}.vip-panel-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:16px;font-weight:780}.vip-panel-subtitle{margin-bottom:10px;color:var(--muted);font-size:12px}
-    .vip-runtime{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:8px;margin-bottom:10px;padding:9px 10px;border:1px solid var(--border);border-radius:11px;background:var(--soft)}.vip-runtime-dot{width:8px;height:8px;border-radius:999px;background:#f59e0b}.vip-runtime[data-connected=true] .vip-runtime-dot{background:#22c55e}.vip-runtime-project{min-width:0;overflow:hidden;font-size:12px;font-weight:750;text-overflow:ellipsis;white-space:nowrap}.vip-runtime-executor{color:var(--muted);font-size:11px}
-    .vip-last-batch{margin-bottom:10px;padding:9px 10px;border-radius:10px;background:rgba(30,143,241,.1);font-size:11px}.vip-last-batch[data-status=failed],.vip-last-batch[data-status=needs_input]{background:rgba(220,38,38,.1)}.vip-last-batch-title{font-weight:800}.vip-last-batch-copy{margin-top:3px}.vip-last-batch details{margin-top:7px}.vip-last-batch summary{cursor:pointer}.vip-last-batch pre{max-height:170px;overflow:auto;margin:6px 0 0;padding:7px;border-radius:7px;background:var(--soft);font:10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}
-    .vip-wide{width:100%;margin:0 0 10px;padding:9px 11px;border-radius:10px;background:var(--blue);color:#fff;cursor:pointer}.vip-wide[hidden]{display:none}.vip-approve-dirty{background:#fbbf24;color:#422006}.vip-task{margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:11px;background:var(--soft)}.vip-task-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.vip-task-status{display:flex;align-items:center;gap:6px;color:#16803c;font-size:11px;font-weight:800;text-transform:uppercase}.vip-task-status .vip-icon{width:11px;height:16px}.vip-task-copy{width:100%;margin-top:6px;padding:0;background:transparent;color:var(--text);cursor:pointer;font-weight:500;text-align:left;white-space:pre-wrap}.vip-task-actions{display:flex;justify-content:flex-end;gap:5px;margin-top:8px}.vip-task-actions button{padding:6px 8px;border-radius:8px;background:transparent;color:var(--text);cursor:pointer}.vip-task-actions button:hover{background:var(--border)}.vip-task-actions .vip-danger{color:var(--danger)}.vip-empty{color:var(--muted);padding:16px 2px 10px;text-align:center}
+    .vip-panel{pointer-events:auto;position:absolute;top:82px;right:18px;display:none;width:min(460px,calc(100vw - 24px));max-height:calc(100vh - 100px);padding:12px;overflow:hidden;border:1px solid var(--border);border-radius:25px;background:var(--bg);box-shadow:var(--shadow);font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.vip-panel[data-open=true]{display:flex;flex-direction:column;gap:14px}.vip-panel-top{display:flex;flex:0 0 auto;flex-direction:column;gap:8px}.vip-panel-heading{display:flex;height:31px;align-items:center;justify-content:space-between;padding-left:7px}.vip-panel-title{font-family:Manrope,Inter,sans-serif;font-size:20px;font-weight:800;line-height:24px;letter-spacing:-.3px}.vip-panel-close{display:grid;width:28px;height:28px;flex:0 0 28px;place-items:center;padding:0;border:1px solid var(--border);border-radius:999px;background:transparent;color:var(--muted);cursor:pointer}.vip-panel-close:hover{background:var(--soft);color:var(--text)}.vip-panel-close .vip-icon{width:16px;height:16px}
+    .vip-runtime{display:flex;height:17px;align-items:center;gap:7px;padding:0 7px;color:var(--muted)}.vip-runtime-dot{width:14px;height:14px;flex:0 0 14px;border:4px solid color-mix(in srgb,#22c55e 24%,transparent);border-radius:999px;background:#aeb8c2;background-clip:padding-box}.vip-runtime[data-connected=true] .vip-runtime-dot{background:#4ade80;background-clip:padding-box}.vip-runtime-project{min-width:0;overflow:hidden;font-size:10px;font-weight:600;line-height:17px;text-overflow:ellipsis;white-space:nowrap}.vip-runtime-executor{display:none}
+    .vip-task-tabs{display:grid;height:37px;grid-template-columns:repeat(3,minmax(0,1fr));border-bottom:1px solid var(--border)}.vip-task-tab{position:relative;display:flex;align-items:center;justify-content:center;gap:8px;padding:0 5px;border-radius:0;background:transparent;color:var(--text);cursor:pointer;font-size:14px;font-weight:500;line-height:20px}.vip-task-tab:hover{background:color-mix(in srgb,var(--soft) 65%,transparent)}.vip-task-tab[aria-selected=true]{color:#286eea;font-weight:700}.vip-task-tab[aria-selected=true]::after{content:"";position:absolute;right:0;bottom:-1px;left:0;height:3px;border-radius:2px 2px 0 0;background:#4386f5}.vip-tab-count{display:none;min-width:20px;height:20px;place-items:center;padding:0 6px;border-radius:999px;background:color-mix(in srgb,var(--text) 5%,transparent);color:#b6c0cc;font-size:11px;font-weight:800;line-height:15px}.vip-tab-count[data-visible=true]{display:grid}.vip-tab-count[data-attention=true]{background:color-mix(in srgb,var(--blue) 14%,transparent);color:var(--blue)}
+    .vip-panel-body{min-height:88px;overflow-x:hidden;overflow-y:auto;padding:0 1px}.vip-panel-body::-webkit-scrollbar{width:8px}.vip-task-list{display:flex;flex-direction:column;gap:8px}.vip-task-card{position:relative;display:flex;width:100%;min-height:66px;align-items:center;gap:8px;padding:11px 12px;border:1px solid var(--border);border-radius:12px;background:var(--bg);color:var(--text);cursor:pointer;text-align:left;transition:border-color .1s ease,background-color .1s ease,opacity .1s ease}.vip-task-card:hover,.vip-task-card:focus-within{border-color:color-mix(in srgb,var(--blue) 48%,var(--border));background:color-mix(in srgb,var(--soft) 62%,var(--bg))}.vip-task-number{display:grid;width:30px;height:30px;flex:0 0 30px;place-items:center;border-radius:999px;background:#286eea;color:#fff;font-size:14px;font-weight:800;line-height:20px}.vip-task-text{display:-webkit-box;min-width:0;flex:1;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:2;color:var(--text);font-size:14px;font-weight:400;line-height:20px;text-overflow:ellipsis}.vip-task-delete{display:none;width:32px;height:32px;flex:0 0 32px;place-items:center;padding:0;border-radius:8px;background:transparent;color:#ef4444;cursor:pointer}.vip-task-card:hover .vip-task-delete,.vip-task-card:focus-within .vip-task-delete{display:grid}.vip-task-delete:hover{background:color-mix(in srgb,#ef4444 10%,transparent)}.vip-task-delete .vip-icon{width:20px;height:20px}.vip-task-card[data-readonly=true]{cursor:pointer}.vip-task-card[data-readonly=true]:hover{background:color-mix(in srgb,var(--soft) 45%,var(--bg))}.vip-task-card[data-rated=true]{opacity:.56}.vip-task-card[data-rated=true]:hover,.vip-task-card[data-rated=true]:focus-within{opacity:.78}
+    .vip-batch{display:flex;flex-direction:column;gap:8px}.vip-batch+.vip-batch{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}.vip-batch-head{display:flex;min-height:26px;align-items:center;gap:7px;padding:0 7px;color:var(--text)}.vip-batch[data-rated=true] .vip-batch-head{opacity:.58}.vip-batch-title{font-size:14px;font-weight:800;line-height:20px}.vip-batch-pill{padding:3px 7px;border-radius:999px;background:color-mix(in srgb,var(--blue) 7%,transparent);color:color-mix(in srgb,var(--blue) 45%,#fff);font-size:10px;font-weight:600;line-height:14px}.vip-shell[data-theme=light] .vip-batch-pill{color:#91c1ff}.vip-batch-duration{margin-left:auto}.vip-batch-toggle{display:grid;width:24px;height:24px;flex:0 0 24px;place-items:center;padding:0;border-radius:7px;background:transparent;color:var(--muted);cursor:pointer}.vip-progress-batch .vip-batch-toggle,.vip-unbatched-ready .vip-batch-toggle{margin-left:auto}.vip-batch-toggle:hover{background:var(--soft);color:var(--text)}.vip-batch-toggle .vip-icon{width:16px;height:16px;transition:transform .12s ease}.vip-batch[data-collapsed=true] .vip-batch-toggle .vip-icon{transform:rotate(-90deg)}.vip-batch[data-collapsed=true] .vip-batch-tasks{display:none}.vip-ready-card{min-height:104px;align-items:flex-start}.vip-ready-content{display:flex;min-width:0;flex:1;align-self:stretch;align-items:stretch;flex-direction:column;gap:7px;text-align:left}.vip-task-tokens{display:flex;min-width:0;flex-wrap:nowrap;align-items:center;gap:6px;overflow-x:auto;overflow-y:hidden;padding-bottom:2px;color:var(--muted);font-size:10px;font-weight:650;line-height:14px;text-align:left;white-space:nowrap}.vip-task-tokens::-webkit-scrollbar{height:4px}.vip-task-tokens-total,.vip-task-token-metric{white-space:nowrap}.vip-ready-footer{display:flex;width:100%;min-width:0;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 12px;margin-top:auto}.vip-ready-footer .vip-task-cost{font-size:14px;line-height:20px}.vip-task-cost{color:var(--blue);font-weight:800}.vip-batch-usage-detail{display:flex;flex-wrap:wrap;gap:3px 6px;padding:0 7px;color:var(--muted);font-size:10px;font-weight:650;line-height:14px}.vip-batch-usage-detail .vip-task-cost{color:var(--blue)}.vip-rating{display:flex;flex:0 0 auto;align-self:center;gap:3px;margin-left:auto}.vip-star{display:grid;width:18px;height:18px;place-items:center;padding:0;background:transparent;color:#d7dce2;cursor:pointer}.vip-star .vip-icon{width:16px;height:16px;fill:transparent}.vip-rating[data-tone=bad] .vip-star[data-selected=true],.vip-rating[data-tone=bad] .vip-star:hover{color:#ef4444}.vip-rating[data-tone=medium] .vip-star[data-selected=true],.vip-rating[data-tone=medium] .vip-star:hover{color:#f59e0b}.vip-rating[data-tone=good] .vip-star[data-selected=true],.vip-rating[data-tone=good] .vip-star:hover{color:#22c55e}.vip-star[data-selected=true] .vip-icon,.vip-star:hover .vip-icon{fill:currentColor}.vip-rating:hover .vip-star{color:#d7dce2}.vip-rating .vip-star:hover,.vip-rating .vip-star:has(~.vip-star:hover){color:var(--rating-preview,#22c55e)}.vip-rating .vip-star:hover .vip-icon,.vip-rating .vip-star:has(~.vip-star:hover) .vip-icon{fill:currentColor}
+    .vip-last-batch{display:flex;flex-direction:column;gap:6px;margin:0 0 8px;padding:9px 10px;border-radius:10px;background:color-mix(in srgb,var(--blue) 10%,var(--bg));font-size:11px}.vip-last-batch[data-status=failed],.vip-last-batch[data-status=needs_input]{background:color-mix(in srgb,#ef4444 12%,var(--bg))}.vip-last-batch-title{font-weight:800}.vip-last-batch-copy{color:var(--muted)}.vip-last-batch details{margin-top:3px}.vip-last-batch summary{cursor:pointer}.vip-last-batch pre{max-height:140px;overflow:auto;margin:6px 0 0;padding:7px;border-radius:7px;background:var(--soft);font:10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap}.vip-continuation{display:block;width:100%;min-height:72px;margin:0 0 8px;resize:vertical;padding:9px 10px;border:1px solid var(--border);border-radius:10px;background:var(--soft);color:var(--text);font-size:12px;line-height:17px}.vip-continuation[hidden]{display:none}.vip-continuation::placeholder{color:var(--muted)}.vip-wide{width:100%;margin:0 0 8px;padding:9px 11px;border-radius:10px;background:var(--blue);color:#fff;cursor:pointer}.vip-wide[hidden]{display:none}.vip-approve-dirty{background:#fbbf24;color:#422006}.vip-empty{color:var(--muted);padding:24px 8px;text-align:center}.vip-panel-footer{display:flex;flex:0 0 auto;align-items:center;justify-content:flex-end;gap:10px;padding:0 1px}.vip-panel-clear,.vip-panel-apply{height:35px;padding:0 12px;border-radius:10px;background:transparent;color:var(--text);cursor:pointer;font-size:13px;font-weight:650;line-height:18px}.vip-panel-clear:hover:not(:disabled){background:var(--soft)}.vip-panel-clear:disabled{color:var(--disabled);cursor:default}.vip-panel-apply{background:#20293a;color:#fff}.vip-shell[data-theme=dark] .vip-panel-apply:not(:disabled){background:var(--blue)}.vip-panel-apply:disabled{background:#c0c0c0;color:#fff;cursor:default}
     .vip-modal-backdrop{pointer-events:auto;position:fixed;inset:0;display:none;place-items:center;background:rgba(12,14,16,.28)}.vip-modal-backdrop[data-open=true]{display:grid}.vip-modal{width:min(390px,calc(100vw - 32px));padding:20px;border:1px solid var(--border);border-radius:18px;background:var(--bg);box-shadow:var(--shadow)}.vip-modal h2{margin:0 0 8px;font-size:18px}.vip-modal p{margin:0;color:var(--muted)}.vip-modal-count{color:var(--blue);font-weight:600}.vip-modal .vip-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.vip-modal button{padding:9px 13px;border-radius:10px;background:var(--soft);color:var(--text);cursor:pointer}.vip-modal button.vip-confirm,.vip-modal button.vip-confirm:hover{background:var(--blue);color:#fff}
     .vip-settings-backdrop{pointer-events:auto;position:fixed;z-index:30;inset:0;display:none;place-items:center;padding:16px;background:rgba(15,23,42,.2)}.vip-shell[data-theme=dark] .vip-settings-backdrop{background:rgba(248,250,252,.11)}.vip-settings-backdrop[data-open=true]{display:grid}.vip-settings{width:min(420px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;padding:18px;border:1px solid var(--border);border-radius:18px;background:var(--bg);box-shadow:0 24px 70px rgba(15,23,42,.25)}.vip-settings-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.vip-settings-header h2{margin:0;font-size:18px;line-height:24px}.vip-settings-close{display:grid;width:32px;height:32px;place-items:center;padding:0;border-radius:8px;background:transparent;color:var(--text);cursor:pointer}.vip-settings-close:hover{background:var(--soft)}.vip-settings-close .vip-icon{width:18px;height:18px}.vip-settings-group+.vip-settings-group{margin-top:20px;padding-top:18px;border-top:1px solid var(--border)}.vip-settings-group h3{margin:0 0 4px;font-size:13px;line-height:18px}.vip-settings-description{margin:0 0 12px;color:var(--muted);font-size:11px;line-height:16px}.vip-theme-options{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:4px;border-radius:12px;background:var(--soft)}.vip-theme-option{height:34px;padding:0 12px;border-radius:8px;background:transparent;color:var(--text);cursor:pointer}.vip-theme-option[data-selected=true]{background:var(--bg);box-shadow:0 1px 4px rgba(15,23,42,.12);color:var(--blue);font-weight:700}.vip-policy-options{display:grid;gap:8px}.vip-policy-option{display:grid;grid-template-columns:18px minmax(0,1fr);gap:10px;padding:12px;border:1px solid var(--border);border-radius:12px;background:transparent;color:var(--text);cursor:pointer;text-align:left}.vip-policy-option:hover{background:var(--soft)}.vip-policy-option[data-selected=true]{border-color:var(--blue);background:color-mix(in srgb,var(--blue) 8%,var(--bg))}.vip-policy-radio{display:grid;width:18px;height:18px;place-items:center;border:1.5px solid var(--muted);border-radius:999px}.vip-policy-option[data-selected=true] .vip-policy-radio{border:5px solid var(--blue)}.vip-policy-title{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;line-height:17px}.vip-recommended{padding:1px 6px;border-radius:999px;background:color-mix(in srgb,var(--blue) 14%,var(--bg));color:var(--blue);font-size:9px;line-height:14px}.vip-policy-copy{display:block;margin-top:2px;color:var(--muted);font-size:10px;line-height:15px}.vip-settings-note{margin:10px 0 0;color:var(--muted);font-size:10px;line-height:15px}
     .vip-crop-layer{position:fixed;inset:0;display:none;pointer-events:none}.vip-crop-layer[data-open=true]{display:block}.vip-crop{pointer-events:auto;position:fixed;min-width:80px;min-height:80px;border:2px solid var(--blue);border-radius:4px;background:rgba(30,143,241,.04);box-shadow:0 0 0 9999px rgba(12,14,16,.18);cursor:move}.vip-crop-actions{pointer-events:auto;position:fixed;z-index:2;display:flex;gap:6px;padding:5px;border-radius:10px;background:#111827;box-shadow:0 8px 24px rgba(0,0,0,.3)}.vip-crop-actions button{padding:7px 10px;border-radius:7px;background:transparent;color:#fff;cursor:pointer}.vip-crop-actions button:last-child{background:var(--blue)}.vip-crop-handle{position:absolute;width:14px;height:14px;border:2px solid #fff;border-radius:3px;background:var(--blue)}.vip-crop-handle[data-handle=nw]{left:-8px;top:-8px;cursor:nwse-resize}.vip-crop-handle[data-handle=ne]{right:-8px;top:-8px;cursor:nesw-resize}.vip-crop-handle[data-handle=sw]{left:-8px;bottom:-8px;cursor:nesw-resize}.vip-crop-handle[data-handle=se]{right:-8px;bottom:-8px;cursor:nwse-resize}.vip-shell[data-capturing=true] .vip-toolbar,.vip-shell[data-capturing=true] .vip-composer,.vip-shell[data-capturing=true] .vip-panel,.vip-shell[data-capturing=true] .vip-highlight,.vip-shell[data-capturing=true] .vip-frame-box,.vip-shell[data-capturing=true] .vip-element-inspector,.vip-shell[data-capturing=true] .vip-anchor-layer,.vip-shell[data-capturing=true] .vip-crop-layer,.vip-shell[data-capturing=true] .vip-tooltip,.vip-shell[data-capturing=true] .vip-toast{visibility:hidden!important}
@@ -178,7 +443,7 @@ function bootOverlay(): void {
       </div>
       <button class="vip-apply" data-action="apply" data-tooltip="Отправить задачи" disabled>Apply</button>
     </div>
-    <section class="vip-panel" aria-label="Visual tasks"><div class="vip-panel-header"><span>Задачи</span><span class="vip-panel-count">0</span></div><div class="vip-panel-subtitle">Активная итерация правок до нажатия Apply.</div><div class="vip-runtime"><span class="vip-runtime-dot"></span><span class="vip-runtime-project">Загрузка проекта…</span><span class="vip-runtime-executor">disconnected</span></div><div class="vip-last-batch" hidden></div><button class="vip-wide vip-approve-dirty" hidden>Продолжить поверх текущих изменений</button><button class="vip-wide vip-retry" hidden>Повторить пакет</button><div class="vip-task-list"></div></section>
+    <section class="vip-panel" aria-label="Список задач"><header class="vip-panel-top"><div class="vip-panel-heading"><span class="vip-panel-title">Список задач</span><button class="vip-panel-close" type="button" aria-label="Закрыть список задач">${icon("close")}</button></div><div class="vip-runtime"><span class="vip-runtime-dot"></span><span class="vip-runtime-project">Загрузка проекта…</span><span class="vip-runtime-executor">disconnected</span></div><div class="vip-task-tabs" role="tablist" aria-label="Состояние задач"><button class="vip-task-tab" type="button" role="tab" data-task-tab="backlog" aria-selected="true">Backlog <span class="vip-tab-count" data-tab-count="backlog">0</span></button><button class="vip-task-tab" type="button" role="tab" data-task-tab="in-progress" aria-selected="false">In progress <span class="vip-tab-count" data-tab-count="in-progress">0</span></button><button class="vip-task-tab" type="button" role="tab" data-task-tab="ready" aria-selected="false">Ready <span class="vip-tab-count" data-tab-count="ready">0</span></button></div></header><div class="vip-panel-body" role="tabpanel"><div class="vip-progress-controls" hidden><div class="vip-last-batch" hidden></div><button class="vip-wide vip-approve-dirty" hidden>Продолжить поверх текущих изменений</button><textarea class="vip-continuation" maxlength="12000" placeholder="Ответьте агенту, чтобы продолжить…" hidden></textarea><button class="vip-wide vip-retry" hidden>Повторить пакет</button></div><div class="vip-task-list"></div></div><footer class="vip-panel-footer"><button class="vip-panel-clear" type="button" data-panel-action="clear">Clear All</button><button class="vip-panel-apply" type="button" data-panel-action="apply" disabled>Apply</button></footer></section>
     <section class="vip-composer" aria-label="Новая задача" data-has-text="false" data-multiline="false" data-has-attachments="false" data-kind="code-change"><div class="vip-drop-overlay">Перетащите сюда и отпустите изображение</div><div class="vip-attachments"></div><div class="vip-composer-main"><div class="vip-composer-content"><div class="vip-context-icon" aria-hidden="true">${icon("settings")}</div><textarea rows="1" aria-label="Комментарий" placeholder="Type a comment..."></textarea></div><div class="vip-composer-actions"><div class="vip-kind">${icon("figma")}<span>Send to Figma</span></div><button class="vip-composer-button" data-composer-action="attach-menu" data-tooltip="Добавить вложение">${icon("paperclip")}</button><button class="vip-composer-button vip-save" data-composer-action="save" data-tooltip="Добавить в задачи" data-shortcut="⌘↵" hidden>${icon("check")}</button></div></div><div class="vip-attachment-menu"><button data-composer-action="screenshot">${icon("screenshot")}<span>Сделать скриншот</span></button><button data-composer-action="upload">${icon("paperclip")}<span>Загрузить файл</span></button></div></section>
     <input class="vip-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" multiple>
     <div class="vip-modal-backdrop" aria-hidden="true"><section class="vip-modal" role="dialog" aria-modal="true" aria-labelledby="vip-apply-title"><h2 id="vip-apply-title">Отправить задачи?</h2><p class="vip-modal-copy"></p><div class="vip-actions"><button data-modal-action="cancel">Отмена</button><button class="vip-confirm" data-modal-action="confirm">Отправить</button></div></section></div>
@@ -213,8 +478,23 @@ function bootOverlay(): void {
   const fileInput = required<HTMLInputElement>(".vip-file-input");
   const panel = required<HTMLElement>(".vip-panel");
   const taskList = required<HTMLElement>(".vip-task-list");
+  const panelBody = required<HTMLElement>(".vip-panel-body");
+  const progressControls = required<HTMLElement>(".vip-progress-controls");
+  const panelCloseButton = required<HTMLButtonElement>(".vip-panel-close");
+  const panelClearButton = required<HTMLButtonElement>(
+    "[data-panel-action='clear']",
+  );
+  const panelApplyButton = required<HTMLButtonElement>(
+    "[data-panel-action='apply']",
+  );
+  const taskTabButtons =
+    shadow.querySelectorAll<HTMLButtonElement>("[data-task-tab]");
+  const backlogTabCount = required<HTMLElement>("[data-tab-count='backlog']");
+  const progressTabCount = required<HTMLElement>(
+    "[data-tab-count='in-progress']",
+  );
+  const completedTabCount = required<HTMLElement>("[data-tab-count='ready']");
   const taskBadge = required<HTMLElement>(".vip-task-badge");
-  const panelCount = required<HTMLElement>(".vip-panel-count");
   const applyButton = required<HTMLButtonElement>("[data-action='apply']");
   const undoButton = required<HTMLButtonElement>("[data-action='undo']");
   const redoButton = required<HTMLButtonElement>("[data-action='redo']");
@@ -232,6 +512,7 @@ function bootOverlay(): void {
   const runtimeExecutor = required<HTMLElement>(".vip-runtime-executor");
   const lastBatch = required<HTMLElement>(".vip-last-batch");
   const approveDirtyButton = required<HTMLButtonElement>(".vip-approve-dirty");
+  const continuationInput = required<HTMLTextAreaElement>(".vip-continuation");
   const retryButton = required<HTMLButtonElement>(".vip-retry");
   const modalBackdrop = required<HTMLElement>(".vip-modal-backdrop");
   const modalCopy = required<HTMLElement>(".vip-modal-copy");
@@ -258,8 +539,13 @@ function bootOverlay(): void {
   let draftKind: TaskKind = "code-change";
   let draftAttachments: Attachment[] = [];
   let editingTask: OverlayTask | null = null;
+  let revisionSourceTask: OverlayTask | null = null;
   let composerPlacementRect: Rect | null = null;
   let readyTasks: OverlayTask[] = [];
+  let allTasks: OverlayTask[] = [];
+  let currentBatches: OverlayBatch[] = [];
+  let currentExecutions: OverlayExecution[] = [];
+  let activeTaskTab: TaskTab = "backlog";
   let currentSession: OverlaySession | null = null;
   let currentSettings: OverlayProjectSettings | null = null;
   let toastTimer: number | undefined;
@@ -268,6 +554,9 @@ function bootOverlay(): void {
   let hoveredInspectionElement: Element | null = null;
   const undoStack: HistoryCommand[] = [];
   const redoStack: HistoryCommand[] = [];
+  const expandedBatchIds = new Set<string>();
+  const autoExpandedReadyBatchIds = new Set<string>();
+  let readyAutoExpandPending = false;
   const colors = [
     "#0c0e10",
     "#ef4444",
@@ -721,37 +1010,69 @@ function bootOverlay(): void {
     composer.dataset.multiline = String(multiline);
     composer.dataset.hasAttachments = String(draftAttachments.length > 0);
     composer.dataset.kind = draftKind;
-    saveButton.hidden = !(hasText || draftKind === "figma-component");
+    saveButton.hidden = !(
+      hasText ||
+      (!revisionSourceTask && draftKind === "figma-component")
+    );
     const rect = currentComposerPlacementRect();
     if (rect && composer.dataset.open === "true" && !composer.hidden)
       positionComposer(surfaceToViewport(rect));
   }
 
   function setPanelOpen(open: boolean): void {
+    expandedBatchIds.clear();
+    readyAutoExpandPending = false;
+    if (open) activeTaskTab = "backlog";
     panel.dataset.open = String(open);
     tasksButton.dataset.active = String(open);
     tasksButton.setAttribute("aria-pressed", String(open));
+    if (open) renderTaskPanel();
+  }
+
+  function setTaskTab(tab: TaskTab): void {
+    if (tab === activeTaskTab) return;
+    expandedBatchIds.clear();
+    activeTaskTab = tab;
+    readyAutoExpandPending = tab === "ready";
+    renderTaskPanel();
   }
 
   function openComposer(
     target: TargetContext,
     kind: TaskKind,
-    options: { editingTask?: OverlayTask; placementRect?: Rect } = {},
+    options: {
+      editingTask?: OverlayTask;
+      revisionSourceTask?: OverlayTask;
+      placementRect?: Rect;
+    } = {},
   ): void {
     targetContext = target;
     draftKind = kind;
     editingTask = options.editingTask ? clone(options.editingTask) : null;
+    revisionSourceTask = options.revisionSourceTask
+      ? clone(options.revisionSourceTask)
+      : null;
     composerPlacementRect = options.placementRect
       ? { ...options.placementRect }
       : null;
     composer.dataset.editing = String(Boolean(editingTask));
+    composer.dataset.revision = String(Boolean(revisionSourceTask));
     composer.setAttribute(
       "aria-label",
-      editingTask ? "Редактирование задачи" : "Новая задача",
+      revisionSourceTask
+        ? "Новая правка"
+        : editingTask
+          ? "Редактирование задачи"
+          : "Новая задача",
     );
-    saveButton.dataset.tooltip = editingTask
-      ? "Сохранить изменения"
-      : "Добавить в задачи";
+    saveButton.dataset.tooltip = revisionSourceTask
+      ? "Добавить правку"
+      : editingTask
+        ? "Сохранить изменения"
+        : "Добавить в задачи";
+    textarea.placeholder = revisionSourceTask
+      ? "Что нужно поправить?"
+      : "Type a comment...";
     setPanelOpen(false);
     attachmentMenu.dataset.open = "false";
     composer.hidden = false;
@@ -772,10 +1093,13 @@ function bootOverlay(): void {
     renderAttachments();
     draftKind = "code-change";
     editingTask = null;
+    revisionSourceTask = null;
     composerPlacementRect = null;
     composer.dataset.editing = "false";
+    composer.dataset.revision = "false";
     composer.setAttribute("aria-label", "Новая задача");
     saveButton.dataset.tooltip = "Добавить в задачи";
+    textarea.placeholder = "Type a comment...";
     targetContext = null;
     attachmentMenu.dataset.open = "false";
     composer.dataset.dragActive = "false";
@@ -799,6 +1123,9 @@ function bootOverlay(): void {
         ? { placementRect: { ...composerPlacementRect } }
         : {}),
       ...(editingTask ? { editingTask: clone(editingTask) } : {}),
+      ...(revisionSourceTask
+        ? { revisionSourceTask: clone(revisionSourceTask) }
+        : {}),
     };
   }
 
@@ -818,6 +1145,9 @@ function bootOverlay(): void {
         : {}),
       ...(snapshot.editingTask
         ? { editingTask: clone(snapshot.editingTask) }
+        : {}),
+      ...(snapshot.revisionSourceTask
+        ? { revisionSourceTask: clone(snapshot.revisionSourceTask) }
         : {}),
     });
     const rect = currentTargetRect() ?? target.rect;
@@ -994,11 +1324,107 @@ function bootOverlay(): void {
   );
 
   function updateTaskCount(): void {
-    const count = readyTasks.length;
-    taskBadge.textContent = String(count);
-    taskBadge.dataset.visible = String(count > 0);
-    panelCount.textContent = String(count);
-    applyButton.disabled = count === 0;
+    const backlogCount = readyTasks.length;
+    const progress = progressTasks();
+    const completed = completedTasks();
+    const progressNeedsAttention = progress.some(
+      (task) =>
+        task.status === "needs_input" ||
+        task.status === "rejected" ||
+        currentBatches.some(
+          (batch) =>
+            batch.id === task.batchId &&
+            (batch.status === "needs_input" || batch.status === "failed"),
+        ),
+    );
+    const completedNeedsAttention = completed.some((task) => !task.rating);
+    taskBadge.textContent = String(backlogCount);
+    taskBadge.dataset.visible = String(backlogCount > 0);
+    applyButton.disabled = backlogCount === 0;
+    panelApplyButton.disabled = backlogCount === 0;
+    panelClearButton.disabled = backlogCount === 0;
+    setTabCount(backlogTabCount, backlogCount, false);
+    setTabCount(progressTabCount, progress.length, progressNeedsAttention);
+    setTabCount(completedTabCount, completed.length, completedNeedsAttention);
+  }
+
+  function setTabCount(
+    element: HTMLElement,
+    count: number,
+    attention: boolean,
+  ): void {
+    element.textContent = String(count);
+    element.dataset.visible = String(count > 0);
+    element.dataset.attention = String(count > 0 && attention);
+  }
+
+  function orderedTasks(tasks = allTasks): OverlayTask[] {
+    return [...tasks].sort(
+      (left, right) =>
+        (left.displayNumber ?? Number.MAX_SAFE_INTEGER) -
+          (right.displayNumber ?? Number.MAX_SAFE_INTEGER) ||
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    );
+  }
+
+  function orderedBacklogTasks(): OverlayTask[] {
+    return orderedTasks(readyTasks);
+  }
+
+  function orderedGroupTasks(group: OverlayTaskGroup): OverlayTask[] {
+    if (!group.batch) return orderedTasks(group.tasks);
+    const taskById = new Map(group.tasks.map((task) => [task.id, task]));
+    const ordered = group.batch.taskIds.flatMap((id) => {
+      const task = taskById.get(id);
+      return task ? [task] : [];
+    });
+    const included = new Set(ordered.map((task) => task.id));
+    return [
+      ...ordered,
+      ...orderedTasks(group.tasks.filter((task) => !included.has(task.id))),
+    ];
+  }
+
+  function progressTasks(): OverlayTask[] {
+    return orderedTasks(
+      allTasks.filter((task) =>
+        ["queued", "in_progress", "needs_input", "rejected"].includes(
+          task.status,
+        ),
+      ),
+    );
+  }
+
+  function completedTasks(): OverlayTask[] {
+    return orderedTasks(allTasks.filter((task) => task.status === "applied"));
+  }
+
+  function taskDisplayNumber(task: OverlayTask): number {
+    if (task.status === "ready" && !task.batchId) {
+      const backlogIndex = orderedBacklogTasks().findIndex(
+        (candidate) => candidate.id === task.id,
+      );
+      if (backlogIndex >= 0) return backlogIndex + 1;
+    }
+    if (task.batchId) {
+      const batch = currentBatches.find(
+        (candidate) => candidate.id === task.batchId,
+      );
+      const batchIndex = batch?.taskIds.indexOf(task.id) ?? -1;
+      if (batchIndex >= 0) return batchIndex + 1;
+      const storedBatchIndex = orderedTasks(
+        allTasks.filter((candidate) => candidate.batchId === task.batchId),
+      ).findIndex((candidate) => candidate.id === task.id);
+      if (storedBatchIndex >= 0) return storedBatchIndex + 1;
+    }
+    if (task.displayNumber && task.displayNumber > 0) return task.displayNumber;
+    const rootIds = [
+      ...new Set(
+        orderedTasks().map((candidate) => candidate.rootTaskId ?? candidate.id),
+      ),
+    ];
+    return Math.max(1, rootIds.indexOf(task.rootTaskId ?? task.id) + 1);
   }
 
   function targetContextFromTask(task: OverlayTask): TargetContext | null {
@@ -1059,20 +1485,36 @@ function bootOverlay(): void {
     };
   }
 
-  function openTaskComposer(task: OverlayTask, anchor?: HTMLElement): void {
-    const target = targetContextFromTask(task);
+  function moveViewportToTask(task: OverlayTask): TargetContext | null {
+    const initialTarget = targetContextFromTask(task);
+    if (!initialTarget) return null;
+    if (initialTarget.element) {
+      initialTarget.element.scrollIntoView({
+        block: "center",
+        inline: "center",
+        behavior: "auto",
+      });
+    } else {
+      const top = Math.max(
+        0,
+        initialTarget.rect.y - innerHeight / 2 + initialTarget.rect.height / 2,
+      );
+      const left = Math.max(
+        0,
+        initialTarget.rect.x - innerWidth / 2 + initialTarget.rect.width / 2,
+      );
+      window.scrollTo({ top, left, behavior: "auto" });
+    }
+    return targetContextFromTask(task);
+  }
+
+  function focusTaskOnPage(task: OverlayTask): TargetContext | null {
+    const target = moveViewportToTask(task);
     if (!target) {
       showToast("У задачи не сохранилась область на странице");
-      return;
+      return null;
     }
-    setMode("idle");
-    textarea.value = task.intent.instruction;
-    draftAttachments = clone(task.attachments);
-    renderAttachments();
-    openComposer(target, task.kind, {
-      editingTask: task,
-      placementRect: anchorPlacementRect(target, anchor),
-    });
+    setPanelOpen(false);
     const rect = surfaceToViewport(target.rect);
     if (target.element) {
       displayRect(frameBox, null);
@@ -1081,11 +1523,51 @@ function bootOverlay(): void {
       displayRect(highlight, null);
       displayRect(frameBox, rect);
     }
+    renderAnchors();
+    return target;
+  }
+
+  function openTaskComposer(task: OverlayTask): void {
+    const target = focusTaskOnPage(task);
+    if (!target) return;
+    setMode("idle");
+    textarea.value = task.intent.instruction;
+    draftAttachments = clone(task.attachments);
+    renderAttachments();
+    openComposer(target, task.kind, {
+      editingTask: task,
+      placementRect: anchorPlacementRect(target),
+    });
+    syncComposerLayout();
+    textarea.focus({ preventScroll: true });
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
+
+  function openRevisionComposer(task: OverlayTask): void {
+    const target = focusTaskOnPage(task);
+    if (!target) return;
+    setMode("idle");
+    textarea.value = "";
+    draftAttachments = clone(task.attachments);
+    renderAttachments();
+    openComposer(target, task.kind, {
+      revisionSourceTask: task,
+      placementRect: anchorPlacementRect(target),
+    });
+    syncComposerLayout();
+    textarea.focus({ preventScroll: true });
   }
 
   function renderAnchors(): void {
     anchorLayer.replaceChildren();
-    readyTasks.forEach((task, index) => {
+    const latestByRoot = new Map<string, OverlayTask>();
+    orderedBacklogTasks().forEach((task) => {
+      const rootId = task.rootTaskId ?? task.id;
+      const existing = latestByRoot.get(rootId);
+      if (!existing || task.round >= existing.round)
+        latestByRoot.set(rootId, task);
+    });
+    [...latestByRoot.values()].forEach((task) => {
       const region = task.regions[0];
       if (!region) return;
       const x =
@@ -1100,10 +1582,8 @@ function bootOverlay(): void {
       anchor.style.left = `${x + Math.min(region.width, 14)}px`;
       anchor.style.top = `${y + Math.min(region.height, 14)}px`;
       anchor.title = task.intent.instruction;
-      if (task.kind === "figma-component") {
-        anchor.append(createIconElement("figma"));
-      } else anchor.textContent = String(index + 1);
-      anchor.addEventListener("click", () => openTaskComposer(task, anchor));
+      anchor.textContent = String(taskDisplayNumber(task));
+      anchor.addEventListener("click", () => openTaskComposer(task));
       anchorLayer.append(anchor);
     });
   }
@@ -1904,6 +2384,7 @@ function bootOverlay(): void {
   const createPayloadFromTask = (task: OverlayTask): Record<string, unknown> =>
     clone({
       protocolVersion: task.protocolVersion,
+      ...(task.displayNumber ? { displayNumber: task.displayNumber } : {}),
       kind: task.kind,
       surface: task.surface,
       nodes: task.nodes,
@@ -1952,24 +2433,86 @@ function bootOverlay(): void {
     if (!response.ok) throw await responseError(response);
     return (await response.json()) as OverlayTask;
   }
+  async function postTaskReview(
+    task: OverlayTask,
+    outcome: ReviewOutcome,
+    options: {
+      note?: string;
+      revision?: { instruction: string; attachments?: Attachment[] };
+    } = {},
+  ): Promise<void> {
+    const response = await apiFetch(
+      `${apiBase}/tasks/${encodeURIComponent(task.id)}/review`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedRevision: task.revision,
+          outcome,
+          ...(options.note ? { note: options.note } : {}),
+          ...(options.revision ? { revision: options.revision } : {}),
+        }),
+      },
+    );
+    if (!response.ok) throw await responseError(response);
+  }
+  async function putTaskRating(
+    task: OverlayTask,
+    value: number,
+  ): Promise<OverlayTask> {
+    const response = await apiFetch(
+      `${apiBase}/tasks/${encodeURIComponent(task.id)}/rating`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedRevision: task.revision,
+          value,
+        }),
+      },
+    );
+    if (!response.ok) throw await responseError(response);
+    return (await response.json()) as OverlayTask;
+  }
   async function saveTask(): Promise<void> {
     const instruction = textarea.value.trim();
     if (!currentTargetRect()) {
       showToast("Сначала выберите элемент или область");
       return;
     }
-    if (!instruction && draftKind !== "figma-component") {
+    if (
+      !instruction &&
+      (Boolean(revisionSourceTask) || draftKind !== "figma-component")
+    ) {
       showToast("Опишите, что нужно изменить");
       textarea.focus();
       return;
     }
     const taskBeingEdited = editingTask ? clone(editingTask) : null;
-    const payload = taskBeingEdited ? null : buildTaskPayload(instruction);
-    if (!taskBeingEdited && !payload) return;
+    const taskBeingRevised = revisionSourceTask
+      ? clone(revisionSourceTask)
+      : null;
+    const payload =
+      taskBeingEdited || taskBeingRevised
+        ? null
+        : buildTaskPayload(instruction);
+    if (!taskBeingEdited && !taskBeingRevised && !payload) return;
     const button = required<HTMLButtonElement>("[data-composer-action='save']");
     button.disabled = true;
     try {
-      if (taskBeingEdited) {
+      if (taskBeingRevised) {
+        await postTaskReview(taskBeingRevised, "needs_revision", {
+          revision: {
+            instruction,
+            ...(draftAttachments.length
+              ? { attachments: clone(draftAttachments) }
+              : {}),
+          },
+        });
+        resetComposer();
+        showToast("Правка добавлена в активную итерацию");
+        await Promise.all([loadTasks(), loadRuntime()]);
+      } else if (taskBeingEdited) {
         const nextInstruction = instruction;
         const nextAttachments = clone(draftAttachments);
         let currentTask = await updateReadyTask(
@@ -2022,86 +2565,689 @@ function bootOverlay(): void {
     }
   }
 
-  function renderTask(task: OverlayTask): HTMLElement {
+  function taskInstruction(task: OverlayTask): string {
+    return task.intent.instruction || "Собрать выбранный компонент в Figma";
+  }
+
+  function renderTaskCard(
+    task: OverlayTask,
+    options: {
+      deletable?: boolean;
+      completed?: boolean;
+      usage?: FormattedBatchUsage;
+    } = {},
+  ): HTMLElement {
     const item = document.createElement("article");
-    item.className = "vip-task";
+    item.className = `vip-task-card${options.completed ? " vip-ready-card" : ""}`;
     item.dataset.taskId = task.id;
-    const head = document.createElement("div");
-    head.className = "vip-task-head";
-    const status = document.createElement("div");
-    status.className = "vip-task-status";
-    if (task.kind === "figma-component") {
-      status.append(createIconElement("figma"));
-    }
-    status.append(document.createTextNode(task.status.replaceAll("_", " ")));
-    const shortId = document.createElement("span");
-    shortId.textContent = task.id.slice(0, 8);
-    shortId.title = task.id;
-    head.append(status, shortId);
-    const copy = document.createElement("button");
-    copy.className = "vip-task-copy";
-    copy.textContent =
-      task.intent.instruction || "Собрать выбранный компонент в Figma";
-    const actions = document.createElement("div");
-    actions.className = "vip-task-actions";
-    const edit = document.createElement("button");
-    edit.textContent = "Изменить";
-    const remove = document.createElement("button");
-    remove.className = "vip-danger";
-    remove.textContent = "Удалить";
-    actions.append(edit, remove);
-    const openEditor = (): void => {
-      const anchor = anchorLayer.querySelector<HTMLElement>(
-        `[data-task-id="${CSS.escape(task.id)}"]`,
-      );
-      openTaskComposer(task, anchor ?? undefined);
-    };
-    copy.addEventListener("click", openEditor);
-    edit.addEventListener("click", openEditor);
-    remove.addEventListener(
-      "click",
-      () =>
-        void (async () => {
-          remove.disabled = true;
-          const payload = createPayloadFromTask(task);
-          let taskId = task.id;
-          try {
-            await deleteTask(taskId);
-            recordCommand({
-              undo: async () => {
-                taskId = (await postTask(payload)).id;
-                await loadTasks();
-              },
-              redo: async () => {
-                await deleteTask(taskId);
-                await loadTasks();
-              },
-            });
-            await loadTasks();
-            showToast("Задача удалена");
-          } catch (error) {
-            showToast(`Не удалось удалить задачу: ${String(error)}`);
-            remove.disabled = false;
-          }
-        })(),
+    item.dataset.readonly = String(!options.deletable);
+    if (options.completed) item.dataset.rated = String(Boolean(task.rating));
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
+    item.setAttribute(
+      "aria-label",
+      `Задача ${taskDisplayNumber(task)}: ${taskInstruction(task)}`,
     );
-    item.append(head, copy, actions);
+    const number = document.createElement("span");
+    number.className = "vip-task-number";
+    number.textContent = String(taskDisplayNumber(task));
+    const content = document.createElement("div");
+    content.className = options.completed
+      ? "vip-ready-content"
+      : "vip-task-text";
+    const copy = document.createElement("div");
+    copy.className = "vip-task-text";
+    copy.textContent = taskInstruction(task);
+    if (options.completed) content.append(copy);
+    else content.textContent = taskInstruction(task);
+    const open = (): void => {
+      if (task.status === "ready") openTaskComposer(task);
+      else if (task.status === "applied") openRevisionComposer(task);
+      else focusTaskOnPage(task);
+    };
+    item.addEventListener("click", (event) => {
+      if (event.target instanceof Element && event.target.closest("button"))
+        return;
+      open();
+    });
+    item.addEventListener("keydown", (event) => {
+      if (event.target instanceof Element && event.target.closest("button"))
+        return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      open();
+    });
+    item.append(number, content);
+    if (options.deletable) {
+      const remove = document.createElement("button");
+      remove.className = "vip-task-delete";
+      remove.type = "button";
+      remove.setAttribute(
+        "aria-label",
+        `Удалить задачу ${taskDisplayNumber(task)}`,
+      );
+      remove.append(createIconElement("trash"));
+      remove.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void deleteBacklogTask(task, remove);
+      });
+      item.append(remove);
+    }
+    if (options.completed) {
+      if (options.usage) content.append(renderTaskUsageTokens(options.usage));
+      const footer = document.createElement("div");
+      footer.className = "vip-ready-footer";
+      if (options.usage?.raw) footer.append(renderUsageCost(options.usage));
+      footer.append(renderRating(task));
+      content.append(footer);
+    }
     return item;
+  }
+
+  async function deleteBacklogTask(
+    task: OverlayTask,
+    button?: HTMLButtonElement,
+  ): Promise<void> {
+    if (button) button.disabled = true;
+    const payload = createPayloadFromTask(task);
+    let taskId = task.id;
+    try {
+      await deleteTask(taskId);
+      recordCommand({
+        undo: async () => {
+          taskId = (await postTask(payload)).id;
+          await loadTasks();
+        },
+        redo: async () => {
+          await deleteTask(taskId);
+          await loadTasks();
+        },
+      });
+      await loadTasks();
+      showToast("Задача удалена · ⌘Z — вернуть");
+    } catch (error) {
+      showToast(`Не удалось удалить задачу: ${String(error)}`);
+      if (button) button.disabled = false;
+    }
+  }
+
+  async function clearBacklog(): Promise<void> {
+    const tasks = orderedBacklogTasks();
+    if (!tasks.length) return;
+    panelClearButton.disabled = true;
+    const entries = tasks.map((task) => ({
+      taskId: task.id,
+      payload: createPayloadFromTask(task),
+    }));
+    try {
+      for (const entry of entries) await deleteTask(entry.taskId);
+      recordCommand({
+        undo: async () => {
+          for (const entry of entries)
+            entry.taskId = (await postTask(entry.payload)).id;
+          await loadTasks();
+        },
+        redo: async () => {
+          for (const entry of entries) await deleteTask(entry.taskId);
+          await loadTasks();
+        },
+      });
+      await loadTasks();
+      showToast(`Удалено задач: ${entries.length} · ⌘Z — вернуть`);
+    } catch (error) {
+      showToast(`Не удалось очистить Backlog: ${String(error)}`);
+      await loadTasks();
+    }
+  }
+
+  function formatInteger(value: number): string {
+    return new Intl.NumberFormat("ru-RU").format(value);
+  }
+
+  function formatCompactTokens(value: number): string {
+    if (value < 1_000) return `${formatInteger(value)} tokens`;
+    if (value < 1_000_000) return `${Math.round(value / 1_000)} K tokens`;
+    return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)} M tokens`;
+  }
+
+  function formatCompactMetric(value: number): string {
+    if (value < 1_000) return formatInteger(value);
+    if (value < 1_000_000) {
+      const scaled = value / 1_000;
+      const digits = scaled < 100 && !Number.isInteger(scaled) ? 1 : 0;
+      return `${scaled.toFixed(digits).replace(".", ",")} K`;
+    }
+    const scaled = value / 1_000_000;
+    const digits = scaled < 100 && !Number.isInteger(scaled) ? 1 : 0;
+    return `${scaled.toFixed(digits).replace(".", ",")} M`;
+  }
+
+  function formatUsd(value: number): string {
+    if (value > 0 && value < 0.01) return "<$0,01";
+    return `$${new Intl.NumberFormat("ru-RU", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value)}`;
+  }
+
+  function formatBatchUsage(batch: OverlayBatch): FormattedBatchUsage {
+    const executions = currentExecutions.filter(
+      (candidate) => candidate.batchId === batch.id,
+    );
+    const candidates: BatchUsage[] = executions.length
+      ? executions.map((execution) => execution.usage)
+      : batch.result?.usage
+        ? [batch.result.usage]
+        : [];
+    const reported = candidates.filter(
+      (usage): usage is Extract<BatchUsage, { availability: "reported" }> =>
+        usage.availability === "reported",
+    );
+    if (!reported.length) {
+      const reason = candidates.find(
+        (usage) => usage.availability === "unavailable",
+      );
+      const reasonCode =
+        reason?.availability === "unavailable" ? reason.reason : undefined;
+      const hostAttached = reasonCode === "host_usage_not_exposed";
+      const unavailableLabel = hostAttached
+        ? "Токены не измерены"
+        : "Токены недоступны";
+      const unavailableDetail = hostAttached
+        ? "Токены не измерены · пакет выполнил подключённый чат"
+        : "Токены недоступны · исполнитель не передал статистику";
+      return {
+        label: unavailableLabel,
+        totalLabel: "—",
+        costLabel: "$—",
+        tokenLabel: unavailableDetail,
+        tokenParts: [unavailableDetail],
+        partial: false,
+        estimated: false,
+        title: hostAttached
+          ? "Подключённый чат выполнил пакет, но не передал Visual Intent статистику токенов."
+          : reasonCode
+            ? `Исполнитель не передал статистику токенов: ${reasonCode}`
+            : "Исполнитель не передал статистику токенов",
+      };
+    }
+    const totals = reported.reduce(
+      (sum, usage) => ({
+        input: sum.input + usage.tokens.inputTokens,
+        cached: sum.cached + usage.tokens.cachedInputTokens,
+        cacheWrite: sum.cacheWrite + usage.tokens.cacheWriteInputTokens,
+        output: sum.output + usage.tokens.outputTokens,
+        reasoning: sum.reasoning + usage.tokens.reasoningOutputTokens,
+      }),
+      { input: 0, cached: 0, cacheWrite: 0, output: 0, reasoning: 0 },
+    );
+    const total = totals.input + totals.output;
+    const partial = reported.length !== candidates.length;
+    const calculatedCosts = reported
+      .map((usage) => usage.apiEquivalentCost)
+      .filter(
+        (
+          cost,
+        ): cost is Extract<
+          NonNullable<
+            Extract<
+              BatchUsage,
+              { availability: "reported" }
+            >["apiEquivalentCost"]
+          >,
+          { availability: "calculated" }
+        > => cost?.availability === "calculated",
+      );
+    const costPartial =
+      partial ||
+      calculatedCosts.length !== reported.length ||
+      calculatedCosts.length !== candidates.length;
+    const costTotal = calculatedCosts.reduce(
+      (sum, cost) => sum + Number(cost.amountUsd),
+      0,
+    );
+    const costLabel = calculatedCosts.length
+      ? `≈${costPartial ? " ≥" : ""}${formatUsd(costTotal)}`
+      : "$—";
+    const tokenParts = [
+      `In ${formatCompactMetric(totals.input)}`,
+      `Out ${formatCompactMetric(totals.output)}`,
+      `Cache ${formatCompactMetric(totals.cached)}`,
+      ...(totals.cacheWrite > 0
+        ? [`CW ${formatCompactMetric(totals.cacheWrite)}`]
+        : []),
+      `R ${formatCompactMetric(totals.reasoning)}`,
+    ];
+    const pricedModels = [
+      ...new Set(calculatedCosts.map((cost) => cost.model)),
+    ];
+    const pricingNote = calculatedCosts.length
+      ? `API-эквивалентная оценка: ${costLabel}. Модель: ${pricedModels.join(", ")}. Reasoning входит в Output и повторно не тарифицируется. Расчёт по сохранённому short-context тарифу OpenAI; комиссии инструментов не включены.`
+      : "API-эквивалентная стоимость не была сохранена для этого запуска.";
+    return {
+      label: `${partial ? "≥ " : ""}${formatCompactTokens(total)}`,
+      totalLabel: `${partial ? "≥ " : ""}${formatCompactMetric(total)}`,
+      costLabel,
+      tokenLabel: `${partial ? "≥ " : ""}${tokenParts.join(" · ")}`,
+      tokenParts,
+      partial,
+      estimated: false,
+      title: `${partial ? "Нижняя граница: часть запусков не передала usage. " : ""}Input: ${formatInteger(totals.input)} · Output: ${formatInteger(totals.output)} · Cached input: ${formatInteger(totals.cached)} · Cache write: ${formatInteger(totals.cacheWrite)} · Reasoning: ${formatInteger(totals.reasoning)}. ${pricingNote}`,
+      raw: {
+        input: totals.input,
+        cached: totals.cached,
+        cacheWrite: totals.cacheWrite,
+        output: totals.output,
+        reasoning: totals.reasoning,
+        ...(calculatedCosts.length
+          ? { costMicros: Math.round(costTotal * 1_000_000) }
+          : {}),
+        total,
+      },
+    };
+  }
+
+  function formatEstimatedTaskUsage(
+    allocation: EstimatedTaskUsageAllocation,
+    batchUsage: FormattedBatchUsage,
+  ): FormattedBatchUsage {
+    const tokenParts = [
+      `In ${formatCompactMetric(allocation.input)}`,
+      `Out ${formatCompactMetric(allocation.output)}`,
+      `Cache ${formatCompactMetric(allocation.cached)}`,
+      ...(allocation.cacheWrite > 0
+        ? [`CW ${formatCompactMetric(allocation.cacheWrite)}`]
+        : []),
+      `R ${formatCompactMetric(allocation.reasoning)}`,
+    ];
+    const percent = new Intl.NumberFormat("ru-RU", {
+      maximumFractionDigits: 1,
+    }).format(allocation.share * 100);
+    const lowerBound = batchUsage.partial
+      ? " Пакетный usage неполный, поэтому оценка построена по его нижней границе."
+      : "";
+    const estimatePrefix = batchUsage.partial ? "≈ ≥ " : "≈ ";
+    const allocationScope =
+      " Распределение выполнено между всеми задачами Apply-пакета; видимые Ready-карточки могут быть только его готовой частью.";
+    return {
+      label: `${estimatePrefix}${formatCompactTokens(allocation.total)}`,
+      totalLabel: `${estimatePrefix}${formatCompactMetric(allocation.total)}`,
+      costLabel:
+        allocation.costMicros === undefined
+          ? "$—"
+          : `${estimatePrefix.trim()}${formatUsd(allocation.costMicros / 1_000_000)}`,
+      tokenLabel: `${estimatePrefix}${tokenParts.join(" · ")}`,
+      tokenParts,
+      partial: batchUsage.partial,
+      estimated: true,
+      title: `${batchUsage.partial ? "Оценочная доля доступной нижней границы usage" : "Оценочная доля измеренного Apply-пакета"}: ${percent}%. Распределение heuristic-v1 учитывает AI-классификацию, масштаб задачи и количество затронутых файлов; это не измерение отдельного agent turn.${lowerBound}${allocationScope}`,
+      raw: {
+        input: allocation.input,
+        cached: allocation.cached,
+        cacheWrite: allocation.cacheWrite,
+        output: allocation.output,
+        reasoning: allocation.reasoning,
+        ...(allocation.costMicros === undefined
+          ? {}
+          : { costMicros: allocation.costMicros }),
+        total: allocation.total,
+      },
+    };
+  }
+
+  function renderUsageCost(usage: FormattedBatchUsage): HTMLElement {
+    const cost = document.createElement("span");
+    cost.className = "vip-task-cost";
+    cost.textContent = usage.costLabel;
+    cost.title = usage.title;
+    return cost;
+  }
+
+  function renderTaskUsageTokens(usage: FormattedBatchUsage): HTMLElement {
+    const line = document.createElement("div");
+    line.className = "vip-task-tokens";
+    line.dataset.available = String(Boolean(usage.raw));
+    line.title = usage.title;
+    if (!usage.raw) {
+      const unavailable = document.createElement("span");
+      unavailable.className = "vip-task-usage-unavailable";
+      unavailable.textContent = usage.tokenLabel;
+      line.append(unavailable);
+      return line;
+    }
+    const total = document.createElement("span");
+    total.className = "vip-task-tokens-total";
+    total.textContent = `Total ${usage.totalLabel}`;
+    line.append(total);
+    usage.tokenParts.forEach((part) => {
+      const metric = document.createElement("span");
+      metric.className = "vip-task-token-metric";
+      metric.textContent = `${usage.estimated ? "" : usage.partial ? "≥ " : ""}${part}`;
+      line.append(metric);
+    });
+    return line;
+  }
+
+  function renderUsageLine(
+    usage: FormattedBatchUsage,
+    className: string,
+  ): HTMLElement {
+    const line = document.createElement("div");
+    line.className = className;
+    line.title = usage.title;
+    const tokens = document.createElement("span");
+    tokens.textContent = usage.tokenLabel;
+    if (usage.raw) line.append(renderUsageCost(usage), tokens);
+    else line.append(tokens);
+    return line;
+  }
+
+  function formatBatchDuration(batch: OverlayBatch): string {
+    const end = batch.completedAt ?? batch.updatedAt;
+    const milliseconds = Math.max(
+      0,
+      new Date(end).getTime() - new Date(batch.createdAt).getTime(),
+    );
+    const totalMinutes = Math.floor(milliseconds / 60_000);
+    if (totalMinutes < 1)
+      return `${Math.max(1, Math.round(milliseconds / 1_000))}s`;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return hours ? `${hours}h${minutes ? ` ${minutes}m` : ""}` : `${minutes}m`;
+  }
+
+  function ratingTone(value: number): "bad" | "medium" | "good" {
+    if (value <= 1) return "bad";
+    if (value <= 3) return "medium";
+    return "good";
+  }
+
+  function renderRating(task: OverlayTask): HTMLElement {
+    const rating = document.createElement("div");
+    rating.className = "vip-rating";
+    rating.dataset.tone = ratingTone(task.rating?.value ?? 5);
+    rating.setAttribute(
+      "aria-label",
+      task.rating ? `Оценка ${task.rating.value} из 5` : "Оценить результат",
+    );
+    for (let value = 1; value <= 5; value += 1) {
+      const star = document.createElement("button");
+      star.className = "vip-star";
+      star.type = "button";
+      star.dataset.selected = String(value <= (task.rating?.value ?? 0));
+      star.setAttribute("aria-label", `${value} из 5`);
+      star.title = `${value} из 5`;
+      star.append(createIconElement("star"));
+      star.addEventListener("pointerenter", () => {
+        rating.dataset.tone = ratingTone(value);
+        rating.style.setProperty(
+          "--rating-preview",
+          value === 1 ? "#ef4444" : value <= 3 ? "#f59e0b" : "#22c55e",
+        );
+      });
+      star.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void saveRating(task, value, rating);
+      });
+      rating.append(star);
+    }
+    rating.addEventListener("pointerleave", () => {
+      rating.dataset.tone = ratingTone(task.rating?.value ?? 5);
+      rating.style.removeProperty("--rating-preview");
+    });
+    return rating;
+  }
+
+  async function saveRating(
+    task: OverlayTask,
+    value: number,
+    rating: HTMLElement,
+  ): Promise<void> {
+    const buttons = rating.querySelectorAll<HTMLButtonElement>("button");
+    buttons.forEach((button) => (button.disabled = true));
+    try {
+      const updated = await putTaskRating(task, value);
+      allTasks = allTasks.map((candidate) =>
+        candidate.id === updated.id ? updated : candidate,
+      );
+      readyTasks = allTasks.filter((candidate) => candidate.status === "ready");
+      if (updated.batchId) {
+        const completedInBatch = allTasks.filter(
+          (candidate) =>
+            candidate.status === "applied" &&
+            candidate.batchId === updated.batchId,
+        );
+        if (
+          completedInBatch.length > 0 &&
+          completedInBatch.every((candidate) => Boolean(candidate.rating))
+        )
+          expandedBatchIds.delete(updated.batchId);
+      }
+      updateTaskCount();
+      renderTaskPanel();
+      showToast(`Оценка сохранена: ${value} из 5`);
+    } catch (error) {
+      showToast(`Не удалось сохранить оценку: ${String(error)}`);
+      await loadTasks();
+    }
+  }
+
+  function toggleBatchExpansion(groupId: string): void {
+    if (expandedBatchIds.has(groupId)) expandedBatchIds.delete(groupId);
+    else expandedBatchIds.add(groupId);
+    renderTaskPanel();
+  }
+
+  function createBatchToggle(groupId: string): HTMLButtonElement {
+    const toggle = document.createElement("button");
+    toggle.className = "vip-batch-toggle";
+    toggle.type = "button";
+    toggle.setAttribute("aria-label", "Свернуть или раскрыть пакет");
+    toggle.setAttribute("aria-expanded", String(expandedBatchIds.has(groupId)));
+    toggle.append(createIconElement("chevronDown"));
+    toggle.addEventListener("click", () => toggleBatchExpansion(groupId));
+    return toggle;
+  }
+
+  function renderProgressBatch(group: OverlayTaskGroup): HTMLElement {
+    const section = document.createElement("section");
+    section.className = "vip-batch vip-progress-batch";
+    section.dataset.batchId = group.id;
+    section.dataset.collapsed = String(!expandedBatchIds.has(group.id));
+    const head = document.createElement("div");
+    head.className = "vip-batch-head";
+    const title = document.createElement("span");
+    title.className = "vip-batch-title";
+    title.textContent = `${group.tasks.length} ${group.tasks.length === 1 ? "задача" : "задачи"}`;
+    head.append(title, createBatchToggle(group.id));
+    const cards = document.createElement("div");
+    cards.className = "vip-task-list vip-batch-tasks";
+    orderedGroupTasks(group).forEach((task) =>
+      cards.append(renderTaskCard(task)),
+    );
+    section.append(head, cards);
+    return section;
+  }
+
+  function renderReadyBatch(groupData: OverlayTaskGroup): HTMLElement {
+    const { batch, tasks } = groupData;
+    const usage = batch ? formatBatchUsage(batch) : undefined;
+    const group = document.createElement("section");
+    group.className = `vip-batch${batch ? "" : " vip-unbatched-ready"}`;
+    group.dataset.batchId = groupData.id;
+    group.dataset.collapsed = String(!expandedBatchIds.has(groupData.id));
+    group.dataset.rated = String(tasks.every((task) => Boolean(task.rating)));
+    const head = document.createElement("div");
+    head.className = "vip-batch-head";
+    const totalInBatch = batch
+      ? allTasks.filter((task) => task.batchId === batch.id).length
+      : tasks.length;
+    const title = document.createElement("span");
+    title.className = "vip-batch-title";
+    title.textContent =
+      totalInBatch > tasks.length
+        ? `${tasks.length} из ${totalInBatch} готовы`
+        : `${tasks.length} ${tasks.length === 1 ? "задача" : "задачи"}`;
+    head.append(title);
+    if (batch && usage) {
+      const usagePill = document.createElement("span");
+      usagePill.className = "vip-batch-pill";
+      usagePill.textContent = usage.label;
+      usagePill.title = usage.title;
+      const duration = document.createElement("span");
+      duration.className = "vip-batch-pill vip-batch-duration";
+      duration.textContent = formatBatchDuration(batch);
+      duration.title = "Время от Apply до готового результата";
+      head.append(usagePill, duration);
+    }
+    head.append(createBatchToggle(groupData.id));
+    const cards = document.createElement("div");
+    cards.className = "vip-task-list vip-batch-tasks";
+    const batchTasks = batch
+      ? orderedTasks(
+          allTasks.filter((candidate) => candidate.batchId === batch.id),
+        )
+      : tasks;
+    const usageByTaskId = new Map<string, FormattedBatchUsage>();
+    if (usage && batchTasks.length === 1 && batchTasks[0]) {
+      usageByTaskId.set(batchTasks[0].id, usage);
+    } else if (usage?.raw && batchTasks.length > 1) {
+      const allocations = allocateEstimatedTaskUsage(
+        usage.raw,
+        batchTasks.map((task) => ({
+          id: task.id,
+          categories: task.result?.classification?.categories,
+          scale: task.result?.classification?.scale,
+          changedFiles: task.result?.changedFiles,
+        })),
+      );
+      batchTasks.forEach((task) => {
+        const allocation = allocations[task.id];
+        if (allocation)
+          usageByTaskId.set(
+            task.id,
+            formatEstimatedTaskUsage(allocation, usage),
+          );
+      });
+    } else if (usage && batchTasks.length > 1) {
+      batchTasks.forEach((task) => usageByTaskId.set(task.id, usage));
+    }
+    if (batch && batchTasks.length > 1 && usage)
+      cards.append(renderUsageLine(usage, "vip-batch-usage-detail"));
+    orderedGroupTasks(groupData).forEach((task) =>
+      cards.append(
+        renderTaskCard(task, {
+          completed: true,
+          usage: usageByTaskId.get(task.id),
+        }),
+      ),
+    );
+    group.append(head, cards);
+    return group;
+  }
+
+  function groupTasksByBatch(
+    tasks: OverlayTask[],
+    namespace: "progress" | "ready",
+  ): OverlayTaskGroup[] {
+    const batchById = new Map(currentBatches.map((batch) => [batch.id, batch]));
+    const grouped = new Map<string, OverlayTask[]>();
+    tasks.forEach((task) => {
+      const key = task.batchId ?? `${namespace}:unbatched`;
+      const group = grouped.get(key) ?? [];
+      group.push(task);
+      grouped.set(key, group);
+    });
+    return [...grouped.entries()]
+      .map(([id, groupTasks]) => ({
+        id,
+        batch: batchById.get(id),
+        tasks: groupTasks,
+      }))
+      .sort((left, right) =>
+        (
+          right.batch?.createdAt ??
+          right.tasks[0]?.createdAt ??
+          ""
+        ).localeCompare(
+          left.batch?.createdAt ?? left.tasks[0]?.createdAt ?? "",
+        ),
+      );
+  }
+
+  function autoExpandLatestUnratedReadyBatch(groups: OverlayTaskGroup[]): void {
+    if (!readyAutoExpandPending || !groups.length) return;
+    readyAutoExpandPending = false;
+    const latestUnrated = groups.find(
+      (group) =>
+        !group.id.startsWith("ready:unbatched") &&
+        group.tasks.some((task) => !task.rating),
+    );
+    if (!latestUnrated || autoExpandedReadyBatchIds.has(latestUnrated.id))
+      return;
+    expandedBatchIds.add(latestUnrated.id);
+    autoExpandedReadyBatchIds.add(latestUnrated.id);
+  }
+
+  function appendEmpty(label: string): void {
+    const empty = document.createElement("div");
+    empty.className = "vip-empty";
+    empty.textContent = label;
+    taskList.append(empty);
+  }
+
+  function renderTaskPanel(): void {
+    taskTabButtons.forEach((button) => {
+      const selected = button.dataset.taskTab === activeTaskTab;
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    panelBody.setAttribute(
+      "aria-label",
+      activeTaskTab === "backlog"
+        ? "Backlog"
+        : activeTaskTab === "in-progress"
+          ? "In progress"
+          : "Ready",
+    );
+    progressControls.hidden = activeTaskTab !== "in-progress";
+    taskList.replaceChildren();
+    if (activeTaskTab === "backlog") {
+      const tasks = orderedBacklogTasks();
+      if (!tasks.length) appendEmpty("Backlog пуст.");
+      else
+        tasks.forEach((task) =>
+          taskList.append(renderTaskCard(task, { deletable: true })),
+        );
+      return;
+    }
+    if (activeTaskTab === "in-progress") {
+      const tasks = progressTasks();
+      if (!tasks.length) appendEmpty("Нет задач в работе.");
+      else
+        groupTasksByBatch(tasks, "progress").forEach((group) =>
+          taskList.append(renderProgressBatch(group)),
+        );
+      return;
+    }
+    const tasks = completedTasks();
+    if (!tasks.length) {
+      appendEmpty("Нет готовых задач.");
+      return;
+    }
+    const groups = groupTasksByBatch(tasks, "ready");
+    autoExpandLatestUnratedReadyBatch(groups);
+    groups.forEach((group) => taskList.append(renderReadyBatch(group)));
   }
 
   async function loadTasks(): Promise<void> {
     try {
-      const response = await apiFetch(`${apiBase}/tasks?status=ready`);
+      const response = await apiFetch(`${apiBase}/tasks`);
       if (!response.ok) throw await responseError(response);
-      readyTasks = (await response.json()) as OverlayTask[];
+      allTasks = (await response.json()) as OverlayTask[];
+      readyTasks = allTasks.filter((task) => task.status === "ready");
       updateTaskCount();
-      taskList.replaceChildren();
-      if (!readyTasks.length) {
-        const empty = document.createElement("div");
-        empty.className = "vip-empty";
-        empty.textContent = "Нет задач, ожидающих Apply.";
-        taskList.append(empty);
-      } else readyTasks.forEach((task) => taskList.append(renderTask(task)));
+      renderTaskPanel();
       renderAnchors();
     } catch (error) {
       showToast(`Не удалось загрузить задачи: ${String(error)}`);
@@ -2122,15 +3268,22 @@ function bootOverlay(): void {
   }
   async function loadRuntime(): Promise<void> {
     try {
-      const [sessionResponse, batchesResponse] = await Promise.all([
-        apiFetch(`${apiBase}/session`),
-        apiFetch(`${apiBase}/batches`),
-      ]);
+      const [sessionResponse, batchesResponse, executionsResponse] =
+        await Promise.all([
+          apiFetch(`${apiBase}/session`),
+          apiFetch(`${apiBase}/batches`),
+          apiFetch(`${apiBase}/executions`),
+        ]);
       if (!sessionResponse.ok) throw await responseError(sessionResponse);
       if (!batchesResponse.ok) throw await responseError(batchesResponse);
+      if (!executionsResponse.ok) throw await responseError(executionsResponse);
       const session = (await sessionResponse.json()) as OverlaySession;
       currentSession = session;
-      const batches = (await batchesResponse.json()) as OverlayBatch[];
+      currentBatches = (await batchesResponse.json()) as OverlayBatch[];
+      currentExecutions =
+        (await executionsResponse.json()) as OverlayExecution[];
+      updateTaskCount();
+      renderTaskPanel();
       const connected =
         session.executor.kind === "codex" &&
         session.executor.status !== "disconnected";
@@ -2144,13 +3297,21 @@ function bootOverlay(): void {
         error: "ошибка",
         disconnected: "отключён",
       };
+      const executorMode =
+        session.executor.ownership === "visual-intent-owned"
+          ? "автономный worker · статистика включена"
+          : "связанный диалог";
       runtimeExecutor.textContent = connected
-        ? `Codex · ${session.executor.ownership === "visual-intent-owned" ? "изолированный · " : ""}${state[session.executor.status] ?? session.executor.status}`
+        ? `Codex · ${executorMode} · ${state[session.executor.status] ?? session.executor.status}`
         : "Codex · отключён";
-      const batch = batches[0];
+      const batch = currentBatches.find(
+        (candidate) => candidate.status !== "completed",
+      );
       if (!batch) {
         lastBatch.hidden = true;
         approveDirtyButton.hidden = true;
+        continuationInput.hidden = true;
+        continuationInput.value = "";
         retryButton.hidden = true;
         return;
       }
@@ -2169,16 +3330,39 @@ function bootOverlay(): void {
       title.textContent = `${labels[batch.status] ?? batch.status} · ${batch.taskIds.length}`;
       const copy = document.createElement("div");
       copy.className = "vip-last-batch-copy";
+      const owned =
+        batch.executorOwnership === "visual-intent-owned" ||
+        session.executor.ownership === "visual-intent-owned";
+      const statusCopy: Record<string, string> = {
+        waiting_for_executor:
+          session.executor.kind === "codex"
+            ? "Пакет ждёт обработки в связанном диалоге Codex."
+            : "Пакет ждёт подключения Codex к проекту.",
+        queued: owned
+          ? "Пакет поставлен в очередь автономного Codex worker. Статистика будет сохранена."
+          : "Пакет поставлен в очередь Codex.",
+        in_progress: owned
+          ? `Автономный Codex worker выполняет пакет. Задач: ${batch.taskIds.length}. Статистика записывается.`
+          : `Codex выполняет пакет. Задач: ${batch.taskIds.length}.`,
+        needs_input: owned
+          ? "Автономному Codex worker нужно уточнение. Ответьте ниже, чтобы продолжить тот же пакет."
+          : "Codex ожидает уточнение. Ответьте ниже, чтобы продолжить нерешённые задачи пакета.",
+        failed: owned
+          ? "Автономное выполнение завершилось ошибкой. Пакет сохранён."
+          : "Codex завершил пакет с ошибкой. Пакет сохранён.",
+      };
       copy.textContent =
-        batch.status === "failed"
-          ? "Не удалось передать задачи в Codex. Пакет сохранён, изменения не применялись."
-          : batch.status === "waiting_for_executor"
-            ? "Ожидает обработки подключённой задачей Codex."
-            : (batch.result?.summary ?? "");
+        batch.result?.summary ?? statusCopy[batch.status] ?? "";
       lastBatch.replaceChildren(title, copy);
       const dirty =
         batch.status === "needs_input" &&
         batch.result?.failureCode === "dirty_worktree_approval_required";
+      const needsContinuation = batch.status === "needs_input" && !dirty;
+      continuationInput.hidden = !needsContinuation;
+      if (!needsContinuation) continuationInput.value = "";
+      retryButton.textContent = needsContinuation
+        ? "Отправить ответ и продолжить"
+        : "Повторить пакет";
       const preExisting =
         batch.result?.preExistingDirtyFiles ??
         batch.workingTreeBaseline?.files.map((file) => file.path) ??
@@ -2219,6 +3403,7 @@ function bootOverlay(): void {
       if (baseline) approveDirtyButton.dataset.baselineFingerprint = baseline;
     } catch {
       currentSession = null;
+      continuationInput.hidden = true;
       runtime.dataset.connected = "false";
       runtimeProject.textContent = "Visual Intent недоступен";
       runtimeExecutor.textContent = "отключён";
@@ -2230,12 +3415,17 @@ function bootOverlay(): void {
     const taskCount = document.createElement("span");
     taskCount.className = "vip-modal-count";
     taskCount.textContent = `${readyTasks.length} ${readyTasks.length === 1 ? "задачу" : "задачи"}`;
+    const recipient =
+      currentSession?.executor.kind === "codex" &&
+      currentSession.executor.ownership === "visual-intent-owned"
+        ? ` автономному Codex worker проекта «${currentSession.displayName}»?`
+        : currentSession?.executor.kind === "codex"
+          ? ` в связанный диалог «${currentSession.displayName}»?`
+          : ` в очередь проекта «${currentSession?.displayName ?? "текущий проект"}»?`;
     modalCopy.replaceChildren(
       document.createTextNode("Отправить "),
       taskCount,
-      document.createTextNode(
-        ` в диалог «${currentSession?.displayName ?? "текущий диалог Codex"}»?`,
-      ),
+      document.createTextNode(recipient),
     );
     modalBackdrop.dataset.open = "true";
     modalBackdrop.setAttribute("aria-hidden", "false");
@@ -2252,13 +3442,27 @@ function bootOverlay(): void {
       if (!response.ok) throw await responseError(response);
       const result = (await response.json()) as {
         accepted: number;
-        batch?: { status: string };
+        batch?: {
+          status: string;
+          executorOwnership?: "host-attached" | "visual-intent-owned";
+        };
+        session?: OverlaySession;
       };
       await Promise.all([loadTasks(), loadRuntime()]);
+      const responseSession = result.session ?? currentSession;
+      const owned =
+        result.batch?.executorOwnership === "visual-intent-owned" ||
+        responseSession?.executor.ownership === "visual-intent-owned";
+      const projectName = responseSession?.displayName ?? "текущий проект";
       showToast(
-        result.batch?.status === "waiting_for_executor"
-          ? `Передано задач: ${result.accepted}. Ожидает Codex.`
-          : `Передано задач: ${result.accepted}`,
+        owned &&
+          (result.batch?.status === "queued" ||
+            result.batch?.status === "in_progress")
+          ? `Автономный запуск начат. Передано задач: ${result.accepted}. Статистика включена.`
+          : result.batch?.status === "waiting_for_executor" &&
+              responseSession?.executor.kind === "codex"
+            ? `В диалог «${projectName}» передано задач: ${result.accepted}. Ожидает Codex.`
+            : `В очередь проекта «${projectName}» передано задач: ${result.accepted}.`,
       );
     } catch (error) {
       showToast(`Не удалось применить задачи: ${String(error)}`);
@@ -2268,13 +3472,30 @@ function bootOverlay(): void {
   async function retryBatch(): Promise<void> {
     const batchId = retryButton.dataset.batchId;
     if (!batchId) return;
+    const answer = continuationInput.hidden
+      ? undefined
+      : continuationInput.value.trim();
+    if (!continuationInput.hidden && !answer) {
+      showToast("Сначала напишите ответ агенту");
+      continuationInput.focus();
+      return;
+    }
     retryButton.disabled = true;
     try {
       const response = await apiFetch(
         `${apiBase}/batches/${encodeURIComponent(batchId)}/retry`,
-        { method: "POST" },
+        {
+          method: "POST",
+          ...(answer
+            ? {
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ answer }),
+              }
+            : {}),
+        },
       );
       if (!response.ok) throw await responseError(response);
+      continuationInput.value = "";
       await Promise.all([loadTasks(), loadRuntime()]);
       showToast("Пакет снова поставлен в очередь");
     } catch (error) {
@@ -2441,7 +3662,30 @@ function bootOverlay(): void {
   tasksButton.addEventListener("click", () => {
     const open = panel.dataset.open !== "true";
     setPanelOpen(open);
-    if (open) void loadTasks();
+    if (open) void Promise.all([loadTasks(), loadRuntime()]);
+  });
+  panelCloseButton.addEventListener("click", () => setPanelOpen(false));
+  panelClearButton.addEventListener("click", () => void clearBacklog());
+  panelApplyButton.addEventListener("click", openApplyModal);
+  taskTabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+      const tab = button.dataset.taskTab as TaskTab | undefined;
+      if (!tab) return;
+      setTaskTab(tab);
+    });
+    button.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      const buttons = [...taskTabButtons];
+      const index = buttons.indexOf(button);
+      const direction = event.key === "ArrowRight" ? 1 : -1;
+      const next =
+        buttons[(index + direction + buttons.length) % buttons.length];
+      const tab = next?.dataset.taskTab as TaskTab | undefined;
+      if (!next || !tab) return;
+      setTaskTab(tab);
+      next.focus();
+    });
   });
   applyButton.addEventListener("click", openApplyModal);
   approveDirtyButton.addEventListener("click", () => void approveDirtyBatch());
@@ -2683,6 +3927,7 @@ function bootOverlay(): void {
           modalBackdrop.setAttribute("aria-hidden", "true");
         } else if (cropLayer.dataset.open === "true") cancelScreenshot();
         else if (composer.dataset.open === "true") cancelComposerDraft();
+        else if (panel.dataset.open === "true") setPanelOpen(false);
         else if (mode !== "idle") enterNeutralMode();
         else return;
         event.preventDefault();
@@ -2772,6 +4017,7 @@ function bootOverlay(): void {
 export function createOverlayScript(
   options: { apiToken?: string } = {},
 ): string {
+  const allocator = allocateEstimatedTaskUsage.toString();
   const source = bootOverlay
     .toString()
     .replace(
@@ -2782,5 +4028,5 @@ export function createOverlayScript(
       '"__VISUAL_INTENT_ICONS__"',
       JSON.stringify(JSON.stringify(ICONS)),
     );
-  return `;(${source})();`;
+  return `;(()=>{const allocateEstimatedTaskUsage=${allocator};(${source})();})();`;
 }

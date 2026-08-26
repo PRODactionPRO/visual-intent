@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
 
 import { FileTaskStore } from "@visual-intent/file-store";
 import type { WorkingTreeBaseline } from "@visual-intent/protocol";
@@ -63,6 +64,12 @@ describe("task API", () => {
       repository: { root: "/workspace/target", name: "target" },
       targetUrl: `http://127.0.0.1:${targetAddress.port}`,
       proxyUrl: "http://127.0.0.1:7310",
+    });
+    await store.attachExecutor({
+      repositoryRoot: "/workspace/target",
+      threadId: "thread-target",
+      ownership: "host-attached",
+      source: "plugin",
     });
     const daemon = await startDaemon({
       host: "127.0.0.1",
@@ -203,7 +210,7 @@ describe("task API", () => {
     });
     const applied = (await appliedResponse.json()) as {
       accepted: number;
-      batch: { status: string; taskIds: string[] };
+      batch: { id: string; status: string; taskIds: string[] };
     };
     expect(appliedResponse.status).toBe(202);
     expect(applied.accepted).toBe(1);
@@ -232,6 +239,192 @@ describe("task API", () => {
     expect(allTasks).toEqual([
       expect.objectContaining({ id: queuedTask.id, status: "queued" }),
     ]);
+
+    const claimedResponse = await fetch(
+      `${api}/batches/${applied.batch.id}/claim`,
+      {
+        method: "POST",
+        headers: {
+          "x-visual-intent-token": "test-token",
+          "x-visual-intent-controller-thread": "thread-target",
+        },
+      },
+    );
+    expect(claimedResponse.status).toBe(200);
+    const claimed = (await claimedResponse.json()) as {
+      batch: { attempt: number; claim: { id: string } };
+    };
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${daemon.port}/_visual-intent/ws?token=test-token`,
+    );
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+    closeAfterTest.push(
+      () =>
+        new Promise<void>((resolve) => {
+          if (socket.readyState === WebSocket.CLOSED) {
+            resolve();
+            return;
+          }
+          socket.once("close", () => resolve());
+          socket.close();
+        }),
+    );
+    const finishedEvent = new Promise<{ task: { type: string } }>((resolve) => {
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as {
+          task?: { type?: string };
+        };
+        if (message.task?.type?.startsWith("batch.")) {
+          resolve(message as { task: { type: string } });
+        }
+      });
+    });
+    workingTreeBaseline = {
+      capturedAt: new Date().toISOString(),
+      fingerprint: "heading-updated",
+      files: [
+        {
+          path: "src/heading.tsx",
+          status: " M",
+          fingerprint: "heading-updated",
+        },
+      ],
+    };
+    const finishedResponse = await fetch(
+      `${api}/batches/${applied.batch.id}/finish`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-visual-intent-token": "test-token",
+          "x-visual-intent-controller-thread": "thread-target",
+        },
+        body: JSON.stringify({
+          status: "failed",
+          claim: {
+            claimId: claimed.batch.claim.id,
+            expectedAttempt: claimed.batch.attempt,
+          },
+          result: {
+            summary: "Heading updated",
+            changedFiles: ["src/heading.tsx"],
+            notes: [],
+            usage: {
+              availability: "reported",
+              capture: "host-reported",
+              source: "codex-sdk",
+              scope: "apply-batch-turn",
+              exact: true,
+              tokens: {
+                inputTokens: 20,
+                cachedInputTokens: 4,
+                cacheWriteInputTokens: 0,
+                outputTokens: 8,
+                reasoningOutputTokens: 2,
+              },
+            },
+            taskResults: [
+              {
+                taskId: queuedTask.id,
+                status: "completed",
+                summary: "Heading updated",
+                changedFiles: ["src/heading.tsx"],
+                notes: [],
+                classification: {
+                  categories: ["style"],
+                  scale: "element",
+                },
+              },
+            ],
+          },
+        }),
+      },
+    );
+    expect(finishedResponse.status).toBe(200);
+    expect((await finishedEvent).task.type).toBe("batch.completed");
+    const appliedTask = await store.get(queuedTask.id);
+    if (!appliedTask) throw new Error("Expected applied task");
+    expect(appliedTask.status).toBe("applied");
+
+    const unauthorizedRating = await fetch(
+      `${api}/tasks/${queuedTask.id}/rating`,
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedRevision: appliedTask.revision,
+          value: 4,
+        }),
+      },
+    );
+    expect(unauthorizedRating.status).toBe(403);
+    const ratingResponse = await fetch(`${api}/tasks/${queuedTask.id}/rating`, {
+      method: "PUT",
+      headers: {
+        "content-type": "application/json",
+        "x-visual-intent-token": "test-token",
+      },
+      body: JSON.stringify({
+        expectedRevision: appliedTask.revision,
+        value: 4,
+      }),
+    });
+    expect(ratingResponse.status).toBe(200);
+    const ratedTask = (await ratingResponse.json()) as {
+      revision: number;
+      rating: { value: number };
+    };
+    expect(ratedTask.rating.value).toBe(4);
+
+    const unauthorizedReview = await fetch(
+      `${api}/tasks/${queuedTask.id}/review`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedRevision: ratedTask.revision,
+          outcome: "accepted",
+        }),
+      },
+    );
+    expect(unauthorizedReview.status).toBe(403);
+    const reviewResponse = await fetch(`${api}/tasks/${queuedTask.id}/review`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-visual-intent-token": "test-token",
+      },
+      body: JSON.stringify({
+        expectedRevision: ratedTask.revision,
+        outcome: "accepted",
+      }),
+    });
+    expect(reviewResponse.status).toBe(200);
+    expect(await reviewResponse.json()).toEqual(
+      expect.objectContaining({
+        task: expect.objectContaining({
+          review: expect.objectContaining({ outcome: "accepted" }),
+        }),
+      }),
+    );
+    const executionsResponse = await fetch(`${api}/executions`);
+    expect(await executionsResponse.json()).toEqual([
+      expect.objectContaining({
+        batchId: applied.batch.id,
+        usage: expect.objectContaining({ availability: "reported" }),
+      }),
+    ]);
+    const eventsResponse = await fetch(`${api}/events`);
+    expect(await eventsResponse.json()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: "batch.finished" }),
+        expect.objectContaining({ type: "task.rated", data: { value: 4 } }),
+        expect.objectContaining({ type: "task.reviewed" }),
+      ]),
+    );
 
     workingTreeBaseline = {
       capturedAt: new Date().toISOString(),
@@ -286,5 +479,89 @@ describe("task API", () => {
     expect(approvedResponse.status).toBe(200);
     expect(approved.approved).toBe(true);
     expect(approved.batch.status).toBe("waiting_for_executor");
+
+    workingTreeBaseline = {
+      capturedAt: new Date().toISOString(),
+      fingerprint: "clean-again",
+      files: [],
+    };
+    await store.configureSession({
+      projectKey: "target",
+      displayName: "Target",
+      repository: { root: "/workspace/target", name: "target" },
+      targetUrl: `http://127.0.0.1:${targetAddress.port}`,
+      proxyUrl: "http://127.0.0.1:7310",
+      executor: {
+        kind: "codex",
+        status: "connected",
+        ownership: "visual-intent-owned",
+        source: "cli",
+      },
+    });
+    await fetch(`${api}/tasks`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-visual-intent-token": "test-token",
+      },
+      body: JSON.stringify({
+        ...payload,
+        surface: { ...payload.surface, id: "surface-worker" },
+        intent: { ...payload.intent, id: "intent-worker" },
+      }),
+    });
+    const workerApply = (await (
+      await fetch(`${api}/tasks/apply`, {
+        method: "POST",
+        headers: { "x-visual-intent-token": "test-token" },
+      })
+    ).json()) as { batch: { id: string; status: string } };
+    expect(workerApply.batch.status).toBe("queued");
+
+    const forbiddenClaim = await fetch(
+      `${api}/batches/${workerApply.batch.id}/claim`,
+      {
+        method: "POST",
+        headers: { "x-visual-intent-token": "test-token" },
+      },
+    );
+    expect(forbiddenClaim.status).toBe(409);
+    expect(await forbiddenClaim.json()).toEqual({
+      error: expect.stringContaining("local Visual Intent SDK worker"),
+    });
+
+    const forbiddenFinish = await fetch(
+      `${api}/batches/${workerApply.batch.id}/finish`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-visual-intent-token": "test-token",
+        },
+        body: JSON.stringify({
+          status: "completed",
+          claim: { claimId: "claim-worker", expectedAttempt: 1 },
+          result: {
+            summary: "Failed before implementation",
+            changedFiles: [],
+            notes: [],
+            taskResults: [
+              {
+                taskId: "task-worker",
+                status: "failed",
+                summary: "Failed before implementation",
+                changedFiles: [],
+                notes: [],
+                classification: {
+                  categories: ["unknown"],
+                  scale: "unknown",
+                },
+              },
+            ],
+          },
+        }),
+      },
+    );
+    expect(forbiddenFinish.status).toBe(409);
   });
 });

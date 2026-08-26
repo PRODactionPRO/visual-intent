@@ -14,6 +14,8 @@ afterEach(async () => {
 
 describe("MCP bridge", () => {
   it("negotiates MCP and exposes the visual task tools", async () => {
+    let claimCalls = 0;
+    let finishCalls = 0;
     const store: TaskStore = {
       async list() {
         return [];
@@ -29,6 +31,18 @@ describe("MCP bridge", () => {
       },
       async delete() {
         throw new Error("not used");
+      },
+      async review() {
+        throw new Error("not used");
+      },
+      async rate() {
+        throw new Error("not used");
+      },
+      async listEvents() {
+        return [];
+      },
+      async listExecutions() {
+        return [];
       },
       async getSettings() {
         return {
@@ -55,8 +69,19 @@ describe("MCP bridge", () => {
       async listBatches() {
         return [];
       },
-      async getBatch() {
-        return undefined;
+      async getBatch(id) {
+        return id === "worker-batch"
+          ? {
+              id,
+              sessionId: "session-1",
+              taskIds: ["task-1"],
+              attempt: 1,
+              status: "queued",
+              executorOwnership: "visual-intent-owned",
+              createdAt: "2026-08-24T00:00:00.000Z",
+              updatedAt: "2026-08-24T00:00:00.000Z",
+            }
+          : undefined;
       },
       async dispatchReady() {
         return undefined;
@@ -68,9 +93,11 @@ describe("MCP bridge", () => {
         throw new Error("not used");
       },
       async claimBatch() {
+        claimCalls += 1;
         throw new Error("not used");
       },
       async finishBatch() {
+        finishCalls += 1;
         throw new Error("not used");
       },
       async claimQueued() {
@@ -93,11 +120,14 @@ describe("MCP bridge", () => {
     expect(tools.tools.map((tool) => tool.name)).toEqual([
       "visual_intent_list_tasks",
       "visual_intent_list_batches",
+      "visual_intent_list_executions",
+      "visual_intent_list_events",
       "visual_intent_retry_batch",
       "visual_intent_approve_dirty_batch",
       "visual_intent_claim_batch",
       "visual_intent_get_task",
       "visual_intent_finish_batch",
+      "visual_intent_review_task",
       "visual_intent_update_task",
     ]);
 
@@ -112,5 +142,61 @@ describe("MCP bridge", () => {
       arguments: {},
     });
     expect(batches.content).toEqual([{ type: "text", text: "[]" }]);
+
+    const forbiddenClaim = await client.callTool({
+      name: "visual_intent_claim_batch",
+      arguments: { id: "worker-batch", controllerThreadId: "thread-host" },
+    });
+    expect(forbiddenClaim.isError).toBe(true);
+    expect(forbiddenClaim.content).toEqual([
+      expect.objectContaining({
+        text: expect.stringContaining("local Visual Intent SDK worker"),
+      }),
+    ]);
+
+    const missingTaskResults = await client.callTool({
+      name: "visual_intent_finish_batch",
+      arguments: {
+        id: "worker-batch",
+        status: "completed",
+        summary: "Done",
+        changedFiles: [],
+        notes: [],
+        claimId: "claim-worker",
+        expectedAttempt: 1,
+        controllerThreadId: "thread-host",
+      },
+    });
+    expect(missingTaskResults.isError).toBe(true);
+    expect(missingTaskResults.content).toEqual([
+      expect.objectContaining({ text: expect.stringContaining("taskResults") }),
+    ]);
+
+    const forbiddenFinish = await client.callTool({
+      name: "visual_intent_finish_batch",
+      arguments: {
+        id: "worker-batch",
+        status: "completed",
+        summary: "Done",
+        changedFiles: [],
+        notes: [],
+        claimId: "claim-worker",
+        expectedAttempt: 1,
+        controllerThreadId: "thread-host",
+        taskResults: [
+          {
+            taskId: "task-1",
+            status: "completed",
+            summary: "Done",
+            changedFiles: [],
+            notes: [],
+            classification: { categories: ["figma"], scale: "element" },
+          },
+        ],
+      },
+    });
+    expect(forbiddenFinish.isError).toBe(true);
+    expect(claimCalls).toBe(0);
+    expect(finishCalls).toBe(0);
   });
 });

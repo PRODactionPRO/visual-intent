@@ -16,6 +16,7 @@ const applyButton = requiredButton("apply");
 const status = required("status");
 let sessions: BridgeSession[] = [];
 let selectedSessionId: string | undefined;
+let missingFramePermissions: string[] = [];
 
 void initialize();
 
@@ -28,6 +29,7 @@ selectButton.addEventListener("click", () => void startSelection());
 applyButton.addEventListener("click", () => void applyTasks());
 
 async function initialize(): Promise<void> {
+  const framePermissions = refreshFramePermissions();
   const state = await send<{ paired: boolean; selectedSessionId?: string }>({
     type: "bridge:state",
   });
@@ -35,6 +37,7 @@ async function initialize(): Promise<void> {
   pairing.hidden = state.paired;
   workspace.hidden = !state.paired;
   if (state.paired) await loadSessions();
+  await framePermissions;
 }
 
 async function pair(): Promise<void> {
@@ -102,12 +105,32 @@ async function chooseSession(sessionId: string): Promise<void> {
 async function startSelection(): Promise<void> {
   if (!selectedSessionId) return;
   await action(async () => {
+    if (missingFramePermissions.length > 0) {
+      await chrome.permissions.request({ origins: missingFramePermissions });
+    }
     await send({
       type: "bridge:start-selection",
       sessionId: selectedSessionId as string,
     });
     window.close();
   });
+}
+
+async function refreshFramePermissions(): Promise<void> {
+  try {
+    const patterns = await send<string[]>({ type: "bridge:frame-origins" });
+    const checks = await Promise.all(
+      patterns.map(async (pattern) => ({
+        pattern,
+        granted: await chrome.permissions.contains({ origins: [pattern] }),
+      })),
+    );
+    missingFramePermissions = checks
+      .filter((check) => !check.granted)
+      .map((check) => check.pattern);
+  } catch {
+    missingFramePermissions = [];
+  }
 }
 
 async function applyTasks(): Promise<void> {

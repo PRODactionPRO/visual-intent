@@ -1,6 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { TaskStatusSchema } from "@visual-intent/protocol";
+import {
+  AttachmentSchema,
+  BatchUsageSchema,
+  ObservedOperationsSchema,
+  TaskClassificationSchema,
+  TaskStatusSchema,
+} from "@visual-intent/protocol";
 import { z } from "zod";
 
 import type { TaskStore } from "@visual-intent/core";
@@ -21,6 +27,19 @@ function failure(error: unknown) {
       },
     ],
   };
+}
+
+async function assertHostControlledBatch(
+  store: TaskStore,
+  id: string,
+): Promise<void> {
+  const batch = await store.getBatch(id);
+  if (!batch) throw new Error(`Batch ${id} was not found`);
+  if (batch.executorOwnership === "visual-intent-owned") {
+    throw new Error(
+      `Batch ${id} belongs to the local Visual Intent SDK worker and cannot be claimed or finished by a host-attached agent`,
+    );
+  }
 }
 
 export function createMcpServer(store: TaskStore): McpServer {
@@ -62,15 +81,53 @@ export function createMcpServer(store: TaskStore): McpServer {
   );
 
   server.registerTool(
+    "visual_intent_list_executions",
+    {
+      description:
+        "List append-only Apply execution receipts, including exact batch usage when an executor reported it.",
+      inputSchema: {
+        since: z.iso.datetime().optional(),
+        batchId: z.string().min(1).optional(),
+      },
+    },
+    async ({ since, batchId }) => {
+      try {
+        return text(await store.listExecutions({ since, batchId }));
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "visual_intent_list_events",
+    {
+      description:
+        "List local privacy-safe Visual Intent lifecycle events for product analytics.",
+      inputSchema: { since: z.iso.datetime().optional() },
+    },
+    async ({ since }) => {
+      try {
+        return text(await store.listEvents({ since }));
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
     "visual_intent_retry_batch",
     {
       description:
         "Retry a Visual Intent batch after its needs-input condition or execution failure has been resolved.",
-      inputSchema: { id: z.string().min(1) },
+      inputSchema: {
+        id: z.string().min(1),
+        answer: z.string().trim().min(1).max(12_000).optional(),
+      },
     },
-    async ({ id }) => {
+    async ({ id, answer }) => {
       try {
-        return text(await store.retryBatch(id));
+        return text(await store.retryBatch(id, { answer }));
       } catch (error) {
         return failure(error);
       }
@@ -105,12 +162,16 @@ export function createMcpServer(store: TaskStore): McpServer {
     "visual_intent_claim_batch",
     {
       description:
-        "Atomically claim one queued Visual Intent Apply batch before editing its server-owned repository.",
-      inputSchema: { id: z.string().min(1) },
+        "Atomically claim one host-attached waiting Visual Intent Apply batch before editing its server-owned repository. Autonomous SDK-worker batches cannot be claimed through MCP.",
+      inputSchema: {
+        id: z.string().min(1),
+        controllerThreadId: z.string().min(1),
+      },
     },
-    async ({ id }) => {
+    async ({ id, controllerThreadId }) => {
       try {
-        return text(await store.claimBatch(id));
+        await assertHostControlledBatch(store, id);
+        return text(await store.claimBatch(id, { controllerThreadId }));
       } catch (error) {
         return failure(error);
       }
@@ -140,22 +201,101 @@ export function createMcpServer(store: TaskStore): McpServer {
     "visual_intent_finish_batch",
     {
       description:
-        "Finish a claimed Visual Intent batch and persist its implementation result.",
+        "Finish a host-attached claimed Visual Intent batch and persist its implementation result. Autonomous SDK-worker batches finish inside the daemon.",
       inputSchema: {
         id: z.string().min(1),
         status: z.enum(["completed", "needs_input", "failed"]),
         summary: z.string().min(1),
         changedFiles: z.array(z.string()).default([]),
         notes: z.array(z.string()).default([]),
+        claimId: z.string().min(1),
+        expectedAttempt: z.number().int().positive(),
+        controllerThreadId: z.string().min(1),
+        executionId: z.string().min(1).optional(),
+        taskResults: z
+          .array(
+            z.object({
+              taskId: z.string().min(1),
+              status: z.enum(["completed", "needs_input", "failed"]),
+              summary: z.string().min(1),
+              changedFiles: z.array(z.string()).default([]),
+              notes: z.array(z.string()).default([]),
+              classification: TaskClassificationSchema,
+            }),
+          )
+          .min(1),
+        usage: BatchUsageSchema.optional(),
+        observedOperations: ObservedOperationsSchema.optional(),
       },
     },
-    async ({ id, status, summary, changedFiles, notes }) => {
+    async ({
+      id,
+      status,
+      summary,
+      changedFiles,
+      notes,
+      claimId,
+      expectedAttempt,
+      controllerThreadId,
+      executionId,
+      taskResults,
+      usage,
+      observedOperations,
+    }) => {
+      try {
+        await assertHostControlledBatch(store, id);
+        return text(
+          await store.finishBatch(
+            id,
+            status,
+            {
+              summary,
+              changedFiles,
+              notes,
+              executionId,
+              taskResults,
+              usage,
+              observedOperations,
+            },
+            {
+              claimId,
+              expectedAttempt,
+              controllerThreadId,
+            },
+          ),
+        );
+      } catch (error) {
+        return failure(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "visual_intent_review_task",
+    {
+      description:
+        "Record a user's verdict for an applied task. A needs_revision verdict atomically creates the next ready round; not_accepted never rolls files back.",
+      inputSchema: {
+        id: z.string().min(1),
+        expectedRevision: z.number().int().positive(),
+        outcome: z.enum(["accepted", "needs_revision", "not_accepted"]),
+        note: z.string().trim().min(1).optional(),
+        revision: z
+          .object({
+            instruction: z.string().trim().min(1),
+            attachments: z.array(AttachmentSchema).max(3).optional(),
+          })
+          .optional(),
+      },
+    },
+    async ({ id, expectedRevision, outcome, note, revision }) => {
       try {
         return text(
-          await store.finishBatch(id, status, {
-            summary,
-            changedFiles,
-            notes,
+          await store.review(id, {
+            expectedRevision,
+            outcome,
+            note,
+            revision,
           }),
         );
       } catch (error) {

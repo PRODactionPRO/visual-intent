@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TaskStore } from "@visual-intent/core";
 
@@ -27,6 +27,18 @@ const store: TaskStore = {
   },
   async delete() {
     throw new Error("not used");
+  },
+  async review() {
+    throw new Error("not used");
+  },
+  async rate() {
+    throw new Error("not used");
+  },
+  async listEvents() {
+    return [];
+  },
+  async listExecutions() {
+    return [];
   },
   async getSettings() {
     return {
@@ -93,6 +105,20 @@ describe("local daemon", () => {
     expect(() => validateTarget("https://example.com")).toThrow("localhost");
   });
 
+  it.each([
+    "http://127.0.0.1:3000/admin",
+    "http://127.0.0.1:3000/?workspace=demo",
+    "http://127.0.0.1:3000/#feedback",
+  ])("rejects a target that is not an origin: %s", (target) => {
+    expect(() => validateTarget(target)).toThrow("origin only");
+  });
+
+  it("accepts and normalizes a localhost origin", () => {
+    expect(validateTarget("http://localhost:3000").origin).toBe(
+      "http://localhost:3000",
+    );
+  });
+
   it("proxies HTML and exposes a health endpoint", async () => {
     const targetServer = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -129,6 +155,40 @@ describe("local daemon", () => {
       ok: true,
       service: "visual-intent",
       mode: "local",
+      protocolVersion: "0.1",
+      daemonInstanceId: daemon.instanceId,
     });
+  });
+
+  it("re-enqueues a persisted autonomous Apply batch after daemon restart", async () => {
+    const queuedBatch = {
+      id: "batch-restart",
+      sessionId: "session-restart",
+      taskIds: ["task-restart"],
+      attempt: 1,
+      status: "queued" as const,
+      executorOwnership: "visual-intent-owned" as const,
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:00:00.000Z",
+    };
+    const enqueue = vi.fn();
+    const recoveryStore: TaskStore = {
+      ...store,
+      async listBatches() {
+        return [queuedBatch];
+      },
+    };
+
+    const daemon = await startDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      target: "http://127.0.0.1:5173",
+      store: recoveryStore,
+      createDispatcher: () => ({ enqueue }),
+    });
+    closers.push(() => daemon.close());
+
+    expect(enqueue).toHaveBeenCalledOnce();
+    expect(enqueue).toHaveBeenCalledWith(queuedBatch);
   });
 });

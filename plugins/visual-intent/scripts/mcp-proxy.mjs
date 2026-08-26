@@ -1,10 +1,11 @@
-import { readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 import { resolveCodexThreadId } from "./session-context.mjs";
+import { loadAndPreflightConnection } from "./connection-preflight.mjs";
 
 let connection;
+const batchClaims = new Map();
 
 const tools = [
   {
@@ -23,7 +24,8 @@ const tools = [
   },
   {
     name: "visual_intent_get_session",
-    description: "Get the connected Visual Intent project and executor state.",
+    description:
+      "Get the connected Visual Intent project, controller and active executor state.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -61,12 +63,37 @@ const tools = [
     },
   },
   {
+    name: "visual_intent_list_executions",
+    description:
+      "List append-only Apply execution receipts and exact usage when available.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: { type: "string" },
+        batchId: { type: "string" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "visual_intent_list_events",
+    description: "List privacy-safe local Visual Intent lifecycle events.",
+    inputSchema: {
+      type: "object",
+      properties: { since: { type: "string" } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "visual_intent_retry_batch",
     description:
       "Retry a needs-input or failed Apply batch after its blocking condition is resolved.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string" } },
+      properties: {
+        id: { type: "string" },
+        answer: { type: "string", maxLength: 12000 },
+      },
       required: ["id"],
       additionalProperties: false,
     },
@@ -88,7 +115,7 @@ const tools = [
   {
     name: "visual_intent_claim_batch",
     description:
-      "Atomically claim one queued Apply batch before editing the project.",
+      "Atomically claim one host-attached waiting Apply batch before editing the project. Autonomous SDK-worker batches cannot be claimed here.",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string" } },
@@ -98,7 +125,8 @@ const tools = [
   },
   {
     name: "visual_intent_finish_batch",
-    description: "Finish a claimed batch and save its implementation result.",
+    description:
+      "Finish a host-attached claimed batch and save its implementation result. Autonomous SDK-worker batches finish inside the daemon.",
     inputSchema: {
       type: "object",
       properties: {
@@ -110,8 +138,108 @@ const tools = [
         summary: { type: "string" },
         changedFiles: { type: "array", items: { type: "string" } },
         notes: { type: "array", items: { type: "string" } },
+        executionId: { type: "string" },
+        claimId: { type: "string" },
+        expectedAttempt: { type: "number" },
+        taskResults: {
+          type: "array",
+          minItems: 1,
+          items: {
+            type: "object",
+            properties: {
+              taskId: { type: "string" },
+              status: {
+                type: "string",
+                enum: ["completed", "needs_input", "failed"],
+              },
+              summary: { type: "string" },
+              changedFiles: { type: "array", items: { type: "string" } },
+              notes: { type: "array", items: { type: "string" } },
+              classification: {
+                type: "object",
+                properties: {
+                  categories: {
+                    type: "array",
+                    minItems: 1,
+                    uniqueItems: true,
+                    items: {
+                      type: "string",
+                      enum: [
+                        "style",
+                        "layout",
+                        "text",
+                        "behavior",
+                        "bug",
+                        "image",
+                        "figma",
+                        "unknown",
+                      ],
+                    },
+                  },
+                  scale: {
+                    type: "string",
+                    enum: [
+                      "element",
+                      "region",
+                      "screen",
+                      "multi-screen",
+                      "system",
+                      "unknown",
+                    ],
+                  },
+                },
+                required: ["categories", "scale"],
+                additionalProperties: false,
+              },
+            },
+            required: [
+              "taskId",
+              "status",
+              "summary",
+              "changedFiles",
+              "notes",
+              "classification",
+            ],
+            additionalProperties: false,
+          },
+        },
       },
-      required: ["id", "status", "summary", "changedFiles", "notes"],
+      required: [
+        "id",
+        "status",
+        "summary",
+        "changedFiles",
+        "notes",
+        "taskResults",
+      ],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "visual_intent_review_task",
+    description:
+      "Record a verdict for an applied task. needs_revision atomically creates the next ready round; not_accepted does not roll files back.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        expectedRevision: { type: "number" },
+        outcome: {
+          type: "string",
+          enum: ["accepted", "needs_revision", "not_accepted"],
+        },
+        note: { type: "string" },
+        revision: {
+          type: "object",
+          properties: {
+            instruction: { type: "string" },
+            attachments: { type: "array", items: { type: "object" } },
+          },
+          required: ["instruction"],
+          additionalProperties: false,
+        },
+      },
+      required: ["id", "expectedRevision", "outcome"],
       additionalProperties: false,
     },
   },
@@ -185,9 +313,29 @@ async function callTool(name, input, requestMeta) {
       case "visual_intent_list_batches":
         value = await api("/batches");
         break;
+      case "visual_intent_list_executions": {
+        const query = new URLSearchParams();
+        if (input.since) query.set("since", input.since);
+        if (input.batchId) query.set("batchId", input.batchId);
+        value = await api(
+          `/executions${query.size > 0 ? `?${query.toString()}` : ""}`,
+        );
+        break;
+      }
+      case "visual_intent_list_events":
+        value = await api(
+          `/events${input.since ? `?since=${encodeURIComponent(input.since)}` : ""}`,
+        );
+        break;
       case "visual_intent_retry_batch":
         value = await api(`/batches/${encodeURIComponent(input.id)}/retry`, {
           method: "POST",
+          ...(input.answer
+            ? {
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ answer: input.answer }),
+              }
+            : {}),
         });
         break;
       case "visual_intent_approve_dirty_batch":
@@ -206,17 +354,52 @@ async function callTool(name, input, requestMeta) {
         value = await api(`/batches/${encodeURIComponent(input.id)}/claim`, {
           method: "POST",
         });
+        if (value?.batch?.claim?.id) {
+          batchClaims.set(input.id, {
+            claimId: value.batch.claim.id,
+            expectedAttempt: value.batch.attempt,
+          });
+        }
         break;
-      case "visual_intent_finish_batch":
+      case "visual_intent_finish_batch": {
+        const claim =
+          batchClaims.get(input.id) ??
+          (input.claimId && input.expectedAttempt
+            ? {
+                claimId: input.claimId,
+                expectedAttempt: input.expectedAttempt,
+              }
+            : undefined);
+        if (!claim) {
+          throw new Error(
+            "Claim this batch in the current Codex task before finishing it",
+          );
+        }
         value = await api(`/batches/${encodeURIComponent(input.id)}/finish`, {
           method: "POST",
           body: JSON.stringify({
             status: input.status,
+            claim,
             result: {
               summary: input.summary,
               changedFiles: input.changedFiles,
               notes: input.notes,
+              ...(input.executionId ? { executionId: input.executionId } : {}),
+              ...(input.taskResults ? { taskResults: input.taskResults } : {}),
             },
+          }),
+        });
+        batchClaims.delete(input.id);
+        break;
+      }
+      case "visual_intent_review_task":
+        value = await api(`/tasks/${encodeURIComponent(input.id)}/review`, {
+          method: "POST",
+          body: JSON.stringify({
+            expectedRevision: input.expectedRevision,
+            outcome: input.outcome,
+            ...(input.note ? { note: input.note } : {}),
+            ...(input.revision ? { revision: input.revision } : {}),
           }),
         });
         break;
@@ -238,19 +421,10 @@ async function callTool(name, input, requestMeta) {
 }
 
 async function attachProject(input, requestMeta) {
+  connection = undefined;
+  batchClaims.clear();
   const repositoryRoot = await realpath(input.repositoryRoot);
-  const candidate = JSON.parse(
-    await readFile(
-      join(repositoryRoot, ".visual-intent", "connection.json"),
-      "utf8",
-    ),
-  );
-  if (candidate.repositoryRoot !== repositoryRoot) {
-    throw new Error(
-      `Visual Intent connection belongs to ${candidate.repositoryRoot}, not ${repositoryRoot}`,
-    );
-  }
-  connection = candidate;
+  const candidate = await loadAndPreflightConnection(repositoryRoot);
   const threadId = resolveCodexThreadId({
     explicit: input.threadId,
     requestMeta,
@@ -260,7 +434,7 @@ async function attachProject(input, requestMeta) {
       "Codex task id is unavailable in the MCP context; pass threadId explicitly",
     );
   }
-  return api("/session/attach", {
+  const attached = await apiWithConnection(candidate, "/session/attach", {
     method: "POST",
     body: JSON.stringify({
       repositoryRoot,
@@ -269,17 +443,29 @@ async function attachProject(input, requestMeta) {
       source: "plugin",
     }),
   });
+  connection = { ...candidate, controllerThreadId: threadId };
+  return attached;
 }
 
 async function api(path, init = {}) {
   if (!connection) {
     throw new Error("Call visual_intent_attach_project first");
   }
+  return apiWithConnection(connection, path, init);
+}
+
+async function apiWithConnection(activeConnection, path, init = {}) {
   const headers = new Headers(init.headers);
-  headers.set("x-visual-intent-token", connection.apiToken);
+  headers.set("x-visual-intent-token", activeConnection.apiToken);
+  if (activeConnection.controllerThreadId) {
+    headers.set(
+      "x-visual-intent-controller-thread",
+      activeConnection.controllerThreadId,
+    );
+  }
   if (init.body) headers.set("content-type", "application/json");
   const response = await fetch(
-    `${connection.daemonUrl.replace(/\/$/, "")}/_visual-intent/api${path}`,
+    `${activeConnection.daemonUrl.replace(/\/$/, "")}/_visual-intent/api${path}`,
     { ...init, headers, signal: AbortSignal.timeout(5000) },
   );
   const body = await response.json();

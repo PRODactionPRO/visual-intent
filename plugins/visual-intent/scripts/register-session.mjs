@@ -1,16 +1,27 @@
 import { execFileSync } from "node:child_process";
-import { readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
 
 import { resolveCodexThreadId } from "./session-context.mjs";
+import { loadAndPreflightConnection } from "./connection-preflight.mjs";
 
 const payload = await readStdin();
 const cwd = typeof payload.cwd === "string" ? payload.cwd : process.cwd();
 const repositoryRoot = await resolveRepositoryRoot(cwd);
-const connection = await readConnection(repositoryRoot);
-
-if (!connection || connection.repositoryRoot !== repositoryRoot)
+let connection;
+try {
+  connection = await loadAndPreflightConnection(repositoryRoot, {
+    timeoutMs: 2000,
+    allowMissing: true,
+  });
+  if (!connection) process.exit(0);
+} catch (error) {
+  await writeHookContext(
+    error instanceof Error
+      ? error.message
+      : `stale_connection: ${String(error)}`,
+  );
   process.exit(0);
+}
 
 const threadId = resolveCodexThreadId({
   explicit: process.env.CODEX_THREAD_ID ?? process.env.CODEX_SESSION_ID,
@@ -36,7 +47,12 @@ try {
       signal: AbortSignal.timeout(3500),
     },
   );
-  if (!response.ok) process.exit(0);
+  if (!response.ok) {
+    await writeHookContext(
+      `stale_connection: daemon rejected the SessionStart attachment with HTTP ${response.status}`,
+    );
+    process.exit(0);
+  }
 
   const body = await response.json();
   const project = body?.session?.displayName ?? connection.projectKey;
@@ -49,7 +65,10 @@ try {
       },
     }),
   );
-} catch {
+} catch (error) {
+  await writeHookContext(
+    `stale_connection: SessionStart could not attach to the validated daemon (${error instanceof Error ? error.message : String(error)})`,
+  );
   process.exit(0);
 }
 
@@ -77,15 +96,17 @@ async function resolveRepositoryRoot(cwd) {
   }
 }
 
-async function readConnection(repositoryRoot) {
-  try {
-    return JSON.parse(
-      await readFile(
-        join(repositoryRoot, ".visual-intent", "connection.json"),
-        "utf8",
-      ),
-    );
-  } catch {
-    return undefined;
-  }
+async function writeHookContext(message) {
+  await new Promise((resolve, reject) =>
+    process.stdout.write(
+      JSON.stringify({
+        continue: true,
+        hookSpecificOutput: {
+          hookEventName: "SessionStart",
+          additionalContext: `Visual Intent is not connected. ${message}`,
+        },
+      }),
+      (error) => (error ? reject(error) : resolve()),
+    ),
+  );
 }

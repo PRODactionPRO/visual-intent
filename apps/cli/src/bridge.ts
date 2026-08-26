@@ -239,12 +239,15 @@ async function activeSessions(
         );
         if (!healthResponse.ok) return undefined;
         const health = (await healthResponse.json()) as {
+          daemonInstanceId?: string;
           session?: ProjectSession;
         };
         if (
+          health.daemonInstanceId !== registration.daemonInstanceId ||
           !health.session ||
           health.session.id !== registration.sessionId ||
-          health.session.repository.root !== registration.repositoryRoot
+          health.session.repository.root !== registration.repositoryRoot ||
+          health.session.projectKey !== registration.projectKey
         ) {
           return undefined;
         }

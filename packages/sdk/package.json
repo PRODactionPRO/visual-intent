@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts --clean",
-    "lint": "eslint src",
+    "lint": "eslint src test",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },

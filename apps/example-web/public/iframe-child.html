@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Встроенная карточка</title>
+    <style>
+      body {
+        display: grid;
+        min-height: 100vh;
+        margin: 0;
+        place-items: center;
+        background: #fff;
+        color: #172033;
+        font:
+          16px/1.45 Inter,
+          system-ui,
+          sans-serif;
+      }
+      article {
+        width: min(420px, calc(100% - 48px));
+        padding: 28px;
+        border: 1px solid #dbe3ec;
+        border-radius: 18px;
+        box-shadow: 0 16px 38px rgb(15 23 42 / 12%);
+      }
+      button {
+        min-height: 44px;
+        padding: 0 18px;
+        border: 0;
+        border-radius: 12px;
+        background: #1689ec;
+        color: white;
+        font:
+          700 14px/1 Inter,
+          system-ui,
+          sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <article>
+      <h2>Карточка внутри iframe</h2>
+      <p>Этот DOM принадлежит отдельному встроенному документу.</p>
+      <button type="button">Выбрать эту кнопку</button>
+    </article>
+  </body>
+</html>

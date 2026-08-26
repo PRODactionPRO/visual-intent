@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { ServerResponse, createServer, type IncomingMessage } from "node:http";
 import { createRequire } from "node:module";
 import type { AddressInfo, Socket } from "node:net";
@@ -27,6 +28,7 @@ export interface DaemonOptions {
 }
 
 export interface RunningDaemon {
+  instanceId: string;
   host: string;
   port: number;
   target: string;
@@ -44,6 +46,15 @@ export function validateTarget(rawTarget: string): URL {
   }
   if (!LOCAL_HOSTS.has(target.hostname)) {
     throw new Error("MVP only proxies localhost targets");
+  }
+  if (
+    (target.pathname !== "" && target.pathname !== "/") ||
+    target.search.length > 0 ||
+    target.hash.length > 0
+  ) {
+    throw new Error(
+      `Target must be an origin only (for example ${target.origin}); remove the path, query, and fragment from --target`,
+    );
   }
   return target;
 }
@@ -71,6 +82,7 @@ export async function startDaemon(
   options: DaemonOptions,
 ): Promise<RunningDaemon> {
   const target = validateTarget(options.target);
+  const instanceId = randomUUID();
   const overlayScript = createOverlayScript({ apiToken: options.apiToken });
   const html2canvasScript = await readFile(
     require.resolve("html2canvas/dist/html2canvas.min.js"),
@@ -95,6 +107,13 @@ export async function startDaemon(
     });
   };
   const dispatcher = options.createDispatcher?.(broadcast);
+  const pendingBatches = await options.store.listBatches();
+  pendingBatches
+    .filter(
+      (batch) =>
+        batch.status === "queued" || batch.status === "waiting_for_executor",
+    )
+    .forEach((batch) => dispatcher?.enqueue(batch));
   const enqueueBatch = (batchId: string): void => {
     void options.store.getBatch(batchId).then((batch) => {
       if (batch) dispatcher?.enqueue(batch);
@@ -157,6 +176,7 @@ export async function startDaemon(
       if (
         await handleApiRequest(request, response, options.store, broadcast, {
           apiToken: options.apiToken,
+          daemonInstanceId: instanceId,
           attachmentStore: options.attachmentStore,
           onBatchReady: enqueueBatch,
         })
@@ -244,6 +264,7 @@ export async function startDaemon(
   const address = server.address() as AddressInfo;
 
   return {
+    instanceId,
     host: options.host,
     port: address.port,
     target: target.href,

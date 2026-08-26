@@ -14,6 +14,25 @@ export interface PendingAttachment {
   dataUrl: string;
 }
 
+export interface CapturedReference {
+  surface: Record<string, unknown>;
+  nodes: Array<Record<string, unknown>>;
+  regions: Array<Record<string, unknown>>;
+  frames: Array<Record<string, unknown>>;
+  relations: Array<Record<string, unknown>>;
+  rootNodeId: string;
+  regionId: string;
+}
+
+export interface ReferenceAnchorRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+}
+
 export interface ReferenceTask {
   protocolVersion: "0.1";
   kind: "code-change";
@@ -32,7 +51,16 @@ export type ExtensionRequest =
   | { type: "bridge:pair"; code: string }
   | { type: "bridge:list" }
   | { type: "bridge:select-session"; sessionId: string }
+  | { type: "bridge:frame-origins" }
   | { type: "bridge:start-selection"; sessionId: string }
+  | { type: "bridge:frame-active" }
+  | {
+      type: "bridge:frame-capture";
+      sessionId: string;
+      reference: CapturedReference;
+      anchor: ReferenceAnchorRect;
+    }
+  | { type: "bridge:finish-selection" }
   | { type: "bridge:apply"; sessionId: string }
   | {
       type: "bridge:create-task";

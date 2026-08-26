@@ -8,7 +8,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FileTaskStore } from "@visual-intent/file-store";
 
 import { ProjectAttachmentStore } from "../src/attachment-store.js";
-import { registerBridgeSession } from "../src/bridge-registry.js";
+import {
+  assertLoopbackUrl,
+  readBridgeRegistrations,
+  registerBridgeSession,
+  unregisterBridgeSession,
+} from "../src/bridge-registry.js";
 import { startBridge } from "../src/bridge.js";
 import { startDaemon } from "../src/daemon.js";
 
@@ -25,6 +30,51 @@ afterEach(async () => {
 });
 
 describe("Chrome extension Bridge", () => {
+  it.each([
+    "http://127.0.0.1:7310/private",
+    "http://127.0.0.1:7310/?token=secret",
+    "http://user:secret@127.0.0.1:7310",
+  ])("rejects a daemon URL that is not a loopback origin: %s", (url) => {
+    expect(() => assertLoopbackUrl(url)).toThrow("loopback origins");
+  });
+
+  it("does not let an old daemon unregister a newer instance", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-registry-"));
+    removeAfterTest.push(directory);
+    const repositoryRoot = join(directory, "project");
+    const store = new FileTaskStore(join(directory, "tasks.json"), {
+      root: repositoryRoot,
+      name: "project",
+    });
+    const session = await store.configureSession({
+      projectKey: "project",
+      displayName: "Project",
+      repository: { root: repositoryRoot, name: "project" },
+      targetUrl: "http://127.0.0.1:3000",
+      proxyUrl: "http://127.0.0.1:7310",
+    });
+    const previous = await registerBridgeSession(
+      session,
+      "http://127.0.0.1:7310",
+      "a".repeat(48),
+      "daemon-old",
+      directory,
+    );
+    await registerBridgeSession(
+      session,
+      "http://127.0.0.1:7310",
+      "a".repeat(48),
+      "daemon-new",
+      directory,
+    );
+
+    await unregisterBridgeSession(previous, directory);
+
+    expect(await readBridgeRegistrations(directory)).toEqual([
+      expect.objectContaining({ daemonInstanceId: "daemon-new" }),
+    ]);
+  });
+
   it("pairs locally and routes a reference task to one active project", async () => {
     const directory = await mkdtemp(join(tmpdir(), "visual-intent-bridge-"));
     removeAfterTest.push(directory);
@@ -78,6 +128,7 @@ describe("Chrome extension Bridge", () => {
       session,
       `http://${daemon.host}:${daemon.port}`,
       daemonToken,
+      daemon.instanceId,
       directory,
     );
 

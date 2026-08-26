@@ -183,10 +183,10 @@ Usage показывается после выполнения на уровне
 Локальная сводка строится без cloud analytics:
 
 ```bash
-pnpm vip -- metrics --repo /absolute/path/to/your-project
-pnpm vip -- metrics --repo /absolute/path/to/your-project --since 14d
-pnpm vip -- metrics --repo /absolute/path/to/your-project --format json
-pnpm vip -- metrics --repo /absolute/path/to/your-project --format csv --output ./visual-intent-metrics.csv
+pnpm vip metrics --repo /absolute/path/to/your-project
+pnpm vip metrics --repo /absolute/path/to/your-project --since 14d
+pnpm vip metrics --repo /absolute/path/to/your-project --format json
+pnpm vip metrics --repo /absolute/path/to/your-project --format csv --output ./visual-intent-metrics.csv
 ```
 
 `--since` принимает ISO date, `Nd` или `Nh`; `--format` — `table`, `json` или `csv`. Команда читает задачи и пакеты из проектного `.visual-intent/tasks.json`, а события и попытки — из `.visual-intent/usage/events.jsonl` и `executions.jsonl`; ничего не отправляет наружу и не меняет проект.

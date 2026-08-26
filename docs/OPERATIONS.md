@@ -10,7 +10,7 @@ Visual Intent управляет только своим proxy. Dev server це�
 Foreground-запуск подходит для короткой проверки из обычного терминала:
 
 ```bash
-pnpm vip -- start \
+pnpm vip start \
   --target http://127.0.0.1:3000 \
   --port 7310 \
   --repo /absolute/path/to/project \
@@ -21,7 +21,7 @@ pnpm vip -- start \
 установите отдельный пользовательский LaunchAgent:
 
 ```bash
-pnpm vip -- service install \
+pnpm vip service install \
   --target http://127.0.0.1:3000 \
   --port 7310 \
   --repo /absolute/path/to/project \
@@ -54,12 +54,12 @@ pnpm vip -- service install \
 Управление сервисом:
 
 ```bash
-pnpm vip -- service status --repo /absolute/path/to/project
-pnpm vip -- service restart --repo /absolute/path/to/project
-pnpm vip -- service stop --repo /absolute/path/to/project
-pnpm vip -- service start --repo /absolute/path/to/project
-pnpm vip -- service logs --repo /absolute/path/to/project
-pnpm vip -- service uninstall --repo /absolute/path/to/project
+pnpm vip service status --repo /absolute/path/to/project
+pnpm vip service restart --repo /absolute/path/to/project
+pnpm vip service stop --repo /absolute/path/to/project
+pnpm vip service start --repo /absolute/path/to/project
+pnpm vip service logs --repo /absolute/path/to/project
+pnpm vip service uninstall --repo /absolute/path/to/project
 ```
 
 `install`, `stop`, `restart`, `uninstall` и аварийный `start` уже загруженного,
@@ -93,7 +93,7 @@ Foreground CLI и LaunchAgent нельзя запускать одновреме
 Intent. Если старого исполнителя точно нет, разрешите recovery явно:
 
 ```bash
-pnpm vip -- start \
+pnpm vip start \
   --target http://127.0.0.1:3000 \
   --repo /absolute/path/to/project \
   --executor isolated-worker \
@@ -103,12 +103,12 @@ pnpm vip -- start \
 Для установленного сервиса:
 
 ```bash
-pnpm vip -- service start \
+pnpm vip service start \
   --repo /absolute/path/to/project \
   --force-recover-stale-worker
 
 # либо для уже загруженного сервиса
-pnpm vip -- service restart \
+pnpm vip service restart \
   --repo /absolute/path/to/project \
   --force-recover-stale-worker
 ```
@@ -123,8 +123,8 @@ pnpm vip -- service restart \
 Проверка ничего не меняет:
 
 ```bash
-pnpm vip -- doctor --repo /absolute/path/to/project
-pnpm vip -- doctor --repo /absolute/path/to/project --format json
+pnpm vip doctor --repo /absolute/path/to/project
+pnpm vip doctor --repo /absolute/path/to/project --format json
 ```
 
 `doctor` сверяет канонический Git-корень, локальный exclude, connection-файл,

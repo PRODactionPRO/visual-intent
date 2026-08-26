@@ -73,7 +73,7 @@ pnpm build
 Затем запустите proxy. Замените абсолютный путь к репозиторию на реальный путь на вашем компьютере:
 
 ```bash
-pnpm vip -- start \
+pnpm vip start \
   --target http://127.0.0.1:3000 \
   --port 7310 \
   --repo /absolute/path/to/your-project \
@@ -91,7 +91,7 @@ MVP намеренно принимает только loopback-адреса и 
 который не завершается вместе с временным терминалом:
 
 ```bash
-pnpm vip -- service install \
+pnpm vip service install \
   --target http://127.0.0.1:3000 \
   --port 7310 \
   --repo /absolute/path/to/your-project \
@@ -104,8 +104,8 @@ Visual Intent не запускает dev server целевого проекта
 файлов:
 
 ```bash
-pnpm vip -- service status --repo /absolute/path/to/your-project
-pnpm vip -- doctor --repo /absolute/path/to/your-project
+pnpm vip service status --repo /absolute/path/to/your-project
+pnpm vip doctor --repo /absolute/path/to/your-project
 ```
 
 `service install`, `service start` и `service restart` считаются успешными
@@ -131,7 +131,7 @@ pnpm build
 Запустите один общий локальный Bridge:
 
 ```bash
-pnpm vip -- bridge
+pnpm vip bridge
 ```
 
 Команда покажет шестизначный код подключения и будет слушать только `http://127.0.0.1:7309`. Каждый проектный daemon, запущенный актуальной сборкой CLI, автоматически регистрирует свою сессию в локальном каталоге пользователя. Если daemon работал до обновления Visual Intent, один раз перезапустите именно его.
@@ -164,7 +164,7 @@ node /absolute/path/to/visual-intent/apps/cli/dist/index.js attach \
 Если предпочтительнее отдельная автоматически созданная задача Codex, запустите proxy так:
 
 ```bash
-pnpm vip -- start \
+pnpm vip start \
   --target http://127.0.0.1:3000 \
   --port 7310 \
   --repo /absolute/path/to/your-project \
@@ -193,15 +193,15 @@ Git-baseline снимается при каждом Apply независимо �
 Показать локальную сводку текущего проекта:
 
 ```bash
-pnpm vip -- metrics --repo /absolute/path/to/your-project
+pnpm vip metrics --repo /absolute/path/to/your-project
 ```
 
 Ограничить период и выгрузить воспроизводимые данные:
 
 ```bash
-pnpm vip -- metrics --repo /absolute/path/to/your-project --since 14d
-pnpm vip -- metrics --repo /absolute/path/to/your-project --format json
-pnpm vip -- metrics --repo /absolute/path/to/your-project \
+pnpm vip metrics --repo /absolute/path/to/your-project --since 14d
+pnpm vip metrics --repo /absolute/path/to/your-project --format json
+pnpm vip metrics --repo /absolute/path/to/your-project \
   --format csv \
   --output ./visual-intent-metrics.csv
 ```
@@ -219,7 +219,7 @@ visual-intent reset --repo /absolute/path/to/your-project --yes
 При запуске из этого monorepo используется эквивалентная команда:
 
 ```bash
-pnpm vip -- reset --repo /absolute/path/to/your-project --yes
+pnpm vip reset --repo /absolute/path/to/your-project --yes
 ```
 
 Сброс навсегда удаляет задачи, Apply-пакеты, durable execution outbox, журналы `usage/` и файлы вложений только из выбранного `<repo>/.visual-intent/`. Проектная сессия, настройки, `connection.json`, `context.md`, конфигурация запуска и файлы самого репозитория сохраняются. Команда требует `--yes` и отказывается работать, пока существует пакет в статусе `waiting_for_executor`, `queued` или `in_progress`, чтобы не стереть работу, которую агент уже получил или выполняет.

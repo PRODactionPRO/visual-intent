@@ -202,7 +202,13 @@ stateDiagram-v2
 
 Apply идемпотентен относительно готовой очереди: после первого вызова задачи уже имеют `batchId`, поэтому повторный вызов не создаёт копию. Claim атомарен и создаёт `BatchClaim` с уникальным `id`, текущим `attempt`, ownership, целевым executor и для host-attached маршрута — ID controller, который забрал пакет. Finish принимается только для `in_progress` и обязан вернуть этот `id` как `claimId`, тот же `expectedAttempt` и тот же controller thread. Поэтому старый receipt, другая задача Codex или повторный finish не могут записать результат. Повтор `failed` разрешён только для структурированно помеченной исправимой причины. Известный legacy-конфликт `active writer` мигрируется в такую исправимую причину без изменения исходных `taskIds`.
 
-Одновременно допускается только один `visual-intent-owned` пакет в `in_progress`. Проектная `.visual-intent/worker-lease.json` не входит в wire protocol, но атомарно защищает этот инвариант на уровне локального runtime. Живой PID запрещает запуск второго worker; stale или невалидная lease заменяется, а release удаляет файл только при совпадении token. После обнаруженного аварийного обрыва собственный пакет завершается как retryable `failed` с `failureCode = worker_interrupted`, usage `unavailable` и сохранённым частичным diff; retry остаётся явным действием. Host-attached `in_progress` claim автоматически не восстанавливается: daemon не владеет внешним процессом и не может доказать, остановилась ли проектная задача Codex.
+Во всём репозитории одновременно допускается только один пакет в `in_progress`, независимо от `host-attached` или `visual-intent-owned` ownership. Поэтому смена маршрута executor может переназначить ожидающие пакеты, но новый writer не получит claim до завершения уже работающего. Проектная `.visual-intent/worker-lease.json` не входит в wire protocol, но дополнительно защищает автономный SDK worker на уровне локального runtime. Живой PID запрещает запуск второго worker; stale или невалидная lease тоже блокирует запуск, пока пользователь или агент после проверки orphan-процессов явно не передаст `--force-recover-stale-worker`. Release удаляет файл только при совпадении token. Отдельная `.visual-intent/daemon-lease.json` не позволяет двум proxy-процессам одного канонического репозитория одновременно менять общую сессию и очередь; readiness LaunchAgent связывает PID и daemon instance из lease с health-ответом. После обнаруженного аварийного обрыва собственный пакет завершается как retryable `failed` с `failureCode = worker_interrupted`, usage `unavailable` и сохранённым частичным diff; retry остаётся явным действием. Host-attached `in_progress` claim автоматически не восстанавливается: daemon не владеет внешним процессом и не может доказать, остановилась ли проектная задача Codex.
+
+Так как универсальный stdio MCP меняет `tasks.json` напрямую, daemon выполняет
+bounded reconciliation автономной очереди. Он не переотправляет host-attached
+пакеты и не запускает queued worker, пока существует любой `in_progress` claim.
+После внешнего `finish`, `retry` или dispatch новый автономный пакет поэтому
+подхватывается без перезапуска daemon, но сохраняет глобальный single-writer.
 
 `ApplyBatch.attempt` начинается с `1` и увеличивается только при разрешённом техническом retry этого же пакета. Благодаря этому несколько запусков одного пакета не смешиваются с пользовательским раундом уточнения задачи.
 
@@ -235,6 +241,7 @@ Apply идемпотентен относительно готовой очер�
 | Метод    | Путь                                            | Назначение                                             |
 | -------- | ----------------------------------------------- | ------------------------------------------------------ |
 | `GET`    | `/_visual-intent/api/health`                    | готовность локального процесса и сессии                |
+| `GET`    | `/_visual-intent/api/diagnostics`               | защищённый снимок proxy, target и безопасных ошибок    |
 | `GET`    | `/_visual-intent/api/session`                   | привязка проекта, controller и исполнителя             |
 | `POST`   | `/_visual-intent/api/session/attach`            | подключить точный репозиторий и controller Codex       |
 | `GET`    | `/_visual-intent/api/settings`                  | получить проектные настройки и их ревизию              |

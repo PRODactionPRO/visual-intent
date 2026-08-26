@@ -31,6 +31,9 @@ describe("project SDK worker lease", () => {
     await expect(acquireProjectWorkerLease(repositoryRoot)).rejects.toThrow(
       `already running for this project (PID ${process.pid})`,
     );
+    await expect(
+      acquireProjectWorkerLease(repositoryRoot, { forceRecoverStale: true }),
+    ).rejects.toThrow(`already running for this project (PID ${process.pid})`);
 
     await first.release();
     const next = await acquireProjectWorkerLease(repositoryRoot);
@@ -38,7 +41,7 @@ describe("project SDK worker lease", () => {
     await next.release();
   });
 
-  it("recovers a lease owned by a dead process", async () => {
+  it("fails closed for a dead owner until recovery is explicit", async () => {
     const repositoryRoot = await createRepositoryRoot();
     const path = leasePath(repositoryRoot);
     await mkdir(join(repositoryRoot, ".visual-intent"), { recursive: true });
@@ -52,7 +55,18 @@ describe("project SDK worker lease", () => {
       "utf8",
     );
 
-    const lease = await acquireProjectWorkerLease(repositoryRoot);
+    await expect(acquireProjectWorkerLease(repositoryRoot)).rejects.toThrow(
+      "Automatic recovery is disabled because an orphaned Codex child may still be editing the repository",
+    );
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      pid: 2_147_483_647,
+      token: "stale-token",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const lease = await acquireProjectWorkerLease(repositoryRoot, {
+      forceRecoverStale: true,
+    });
 
     expect(lease.recoveredStaleLease).toBe(true);
     const stored = JSON.parse(await readFile(path, "utf8")) as {
@@ -83,13 +97,20 @@ describe("project SDK worker lease", () => {
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual(foreign);
   });
 
-  it("recovers a stable malformed lease", async () => {
+  it("fails closed for a malformed lease until recovery is explicit", async () => {
     const repositoryRoot = await createRepositoryRoot();
     const path = leasePath(repositoryRoot);
     await mkdir(join(repositoryRoot, ".visual-intent"), { recursive: true });
     await writeFile(path, "not-json\n", "utf8");
 
-    const lease = await acquireProjectWorkerLease(repositoryRoot);
+    await expect(acquireProjectWorkerLease(repositoryRoot)).rejects.toThrow(
+      "stale SDK worker lease with an invalid owner",
+    );
+    expect(await readFile(path, "utf8")).toBe("not-json\n");
+
+    const lease = await acquireProjectWorkerLease(repositoryRoot, {
+      forceRecoverStale: true,
+    });
 
     expect(lease.recoveredStaleLease).toBe(true);
     await lease.release();

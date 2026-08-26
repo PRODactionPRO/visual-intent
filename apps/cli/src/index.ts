@@ -40,9 +40,14 @@ import {
   ensureProjectContext,
   readProjectContext,
 } from "./project-context.js";
+import { acquireProjectDaemonLease } from "./project-daemon-lease.js";
+import { ConnectionProjectDaemonProbe } from "./project-daemon-probe.js";
 import { resetProjectHistory } from "./reset-history.js";
 import { acquireProjectWorkerLease } from "./worker-lease.js";
 import { parseExecutorMode } from "./executor-mode.js";
+import { doctorExitCode, formatDoctorReport, runDoctor } from "./doctor.js";
+import { registerServiceCommands } from "./service-commands.js";
+import { formatLoopbackOrigin } from "./loopback-origin.js";
 
 const execFileAsync = promisify(execFile);
 const program = new Command();
@@ -79,6 +84,11 @@ program
     "allow Codex to work when the target repository is already dirty",
     false,
   )
+  .option(
+    "--force-recover-stale-worker",
+    "recover a dead SDK worker lease only after checking for orphaned Codex processes",
+    false,
+  )
   .action(
     async (options: {
       target: string;
@@ -90,6 +100,7 @@ program
       executor: string;
       workerThread?: string;
       allowDirty: boolean;
+      forceRecoverStaleWorker: boolean;
     }) => {
       const port = Number.parseInt(options.port, 10);
       if (!Number.isInteger(port) || port < 0 || port > 65_535) {
@@ -112,233 +123,257 @@ program
       });
 
       const repositoryRoot = await realpath(resolve(options.repo));
-      const storePath = projectTaskStorePath(repositoryRoot);
-      if (options.workerThread && executor !== "isolated-worker") {
-        throw new Error("--worker-thread requires --executor isolated-worker");
-      }
-      const repository = {
-        root: repositoryRoot,
-        name: basename(repositoryRoot),
-      };
-      const projectKey = options.project ?? repository.name;
-      const displayName = options.name ?? projectKey;
-      const connectionDirectory = join(repositoryRoot, ".visual-intent");
-      const connectionPath = join(connectionDirectory, "connection.json");
-      await ensureLocalGitExclude(repositoryRoot);
-      await mkdir(connectionDirectory, { recursive: true });
-      const apiToken = await loadOrCreateApiToken(connectionPath, {
-        projectKey,
+      const legacyDaemon = await new ConnectionProjectDaemonProbe().inspect(
         repositoryRoot,
-      });
-      const store = new FileTaskStore(storePath, repository, {
-        allowDirty: options.allowDirty,
-        captureWorkingTreeBaseline: () =>
-          captureGitWorkingTreeBaseline(repositoryRoot),
-        captureProjectContext: () => captureProjectContext(repositoryRoot),
-      });
-      const existingSession = await store.getSession();
-      const activeExistingWorker =
-        existingSession?.executor.ownership === "visual-intent-owned"
-          ? existingSession.executor
-          : undefined;
-      const persistedWorker =
-        existingSession?.sdkWorker ??
-        (activeExistingWorker
-          ? {
-              kind: "codex" as const,
-              ownership: "visual-intent-owned" as const,
-              source: activeExistingWorker.source ?? ("generated" as const),
-              ...(activeExistingWorker.threadId
-                ? { threadId: activeExistingWorker.threadId }
-                : {}),
-              ...(activeExistingWorker.attachedAt
-                ? { attachedAt: activeExistingWorker.attachedAt }
-                : {}),
-            }
-          : undefined);
-      const candidateWorkerThreadId =
-        options.workerThread ?? persistedWorker?.threadId;
-      if (
-        candidateWorkerThreadId &&
-        candidateWorkerThreadId === existingSession?.controller?.threadId
-      ) {
-        if (!options.workerThread) {
-          console.log(
-            "The stored SDK worker matches the controller; Visual Intent will create a separate autonomous thread.",
-          );
-        } else {
+      );
+      if (legacyDaemon) {
+        throw new Error(
+          `A Visual Intent daemon for ${repositoryRoot} is already running at ${legacyDaemon.daemonUrl}. Stop the existing proxy before starting another process for the same repository.`,
+        );
+      }
+      const daemonLease = await acquireProjectDaemonLease(repositoryRoot);
+      try {
+        const storePath = projectTaskStorePath(repositoryRoot);
+        if (options.workerThread && executor !== "isolated-worker") {
           throw new Error(
-            "The autonomous SDK worker must use a different Codex thread than the attached controller",
+            "--worker-thread requires --executor isolated-worker",
           );
         }
-      }
-      const workerThreadId =
-        candidateWorkerThreadId === existingSession?.controller?.threadId
-          ? undefined
-          : candidateWorkerThreadId;
-      const contextPath = await ensureProjectContext(
-        repositoryRoot,
-        displayName,
-      );
-      const usesAutonomousWorker =
-        executor === "isolated-worker" || activeExistingWorker !== undefined;
-      const workerLease = usesAutonomousWorker
-        ? await acquireProjectWorkerLease(repositoryRoot)
-        : undefined;
-      let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
-      let bridgeRegistration:
-        | Awaited<ReturnType<typeof registerBridgeSession>>
-        | undefined;
-      try {
-        if (workerLease) {
-          const recovered = await store.recoverInterruptedBatches();
-          if (recovered.length > 0) {
+        const repository = {
+          root: repositoryRoot,
+          name: basename(repositoryRoot),
+        };
+        const projectKey = options.project ?? repository.name;
+        const displayName = options.name ?? projectKey;
+        const connectionDirectory = join(repositoryRoot, ".visual-intent");
+        const connectionPath = join(connectionDirectory, "connection.json");
+        await ensureLocalGitExclude(repositoryRoot);
+        await mkdir(connectionDirectory, { recursive: true });
+        const apiToken = await loadOrCreateApiToken(connectionPath, {
+          projectKey,
+          repositoryRoot,
+        });
+        const store = new FileTaskStore(storePath, repository, {
+          allowDirty: options.allowDirty,
+          captureWorkingTreeBaseline: () =>
+            captureGitWorkingTreeBaseline(repositoryRoot),
+          captureProjectContext: () => captureProjectContext(repositoryRoot),
+        });
+        const existingSession = await store.getSession();
+        const activeExistingWorker =
+          existingSession?.executor.ownership === "visual-intent-owned"
+            ? existingSession.executor
+            : undefined;
+        const persistedWorker =
+          existingSession?.sdkWorker ??
+          (activeExistingWorker
+            ? {
+                kind: "codex" as const,
+                ownership: "visual-intent-owned" as const,
+                source: activeExistingWorker.source ?? ("generated" as const),
+                ...(activeExistingWorker.threadId
+                  ? { threadId: activeExistingWorker.threadId }
+                  : {}),
+                ...(activeExistingWorker.attachedAt
+                  ? { attachedAt: activeExistingWorker.attachedAt }
+                  : {}),
+              }
+            : undefined);
+        const candidateWorkerThreadId =
+          options.workerThread ?? persistedWorker?.threadId;
+        if (
+          candidateWorkerThreadId &&
+          candidateWorkerThreadId === existingSession?.controller?.threadId
+        ) {
+          if (!options.workerThread) {
             console.log(
-              `Recovered ${recovered.length} interrupted SDK Apply batch(es); review partial changes before Retry.`,
+              "The stored SDK worker matches the controller; Visual Intent will create a separate autonomous thread.",
+            );
+          } else {
+            throw new Error(
+              "The autonomous SDK worker must use a different Codex thread than the attached controller",
             );
           }
         }
-        await store.configureSession({
-          projectKey,
+        const workerThreadId =
+          candidateWorkerThreadId === existingSession?.controller?.threadId
+            ? undefined
+            : candidateWorkerThreadId;
+        const contextPath = await ensureProjectContext(
+          repositoryRoot,
           displayName,
-          repository,
-          targetUrl: target,
-          proxyUrl: `http://${options.host}:${port}`,
-          ...(executor === "isolated-worker"
-            ? {
-                sdkWorker: {
-                  kind: "codex" as const,
-                  ownership: "visual-intent-owned" as const,
-                  source: options.workerThread
-                    ? ("cli" as const)
-                    : (persistedWorker?.source ?? ("generated" as const)),
-                  ...(workerThreadId ? { threadId: workerThreadId } : {}),
-                  ...(workerThreadId
-                    ? {
-                        attachedAt:
-                          options.workerThread || !persistedWorker?.attachedAt
-                            ? new Date().toISOString()
-                            : persistedWorker.attachedAt,
-                      }
-                    : {}),
-                },
-                executor: {
-                  kind: "codex" as const,
-                  status:
-                    !options.workerThread &&
-                    activeExistingWorker?.status !== "busy"
-                      ? (activeExistingWorker?.status ?? ("connected" as const))
-                      : ("connected" as const),
-                  ownership: "visual-intent-owned" as const,
-                  source: options.workerThread
-                    ? ("cli" as const)
-                    : (persistedWorker?.source ?? ("generated" as const)),
-                  ...(workerThreadId
-                    ? {
-                        threadId: workerThreadId,
-                        attachedAt:
-                          options.workerThread || !persistedWorker?.attachedAt
-                            ? new Date().toISOString()
-                            : persistedWorker.attachedAt,
-                      }
-                    : {}),
-                },
-              }
-            : executor === "disconnected"
+        );
+        const usesAutonomousWorker =
+          executor === "isolated-worker" || activeExistingWorker !== undefined;
+        const workerLease = usesAutonomousWorker
+          ? await acquireProjectWorkerLease(repositoryRoot, {
+              forceRecoverStale: options.forceRecoverStaleWorker,
+            })
+          : undefined;
+        let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
+        let bridgeRegistration:
+          | Awaited<ReturnType<typeof registerBridgeSession>>
+          | undefined;
+        try {
+          if (workerLease) {
+            if (workerLease.recoveredStaleLease) {
+              console.log(
+                "Recovered a stale SDK worker lease after explicit force recovery. Review the working tree before Retry.",
+              );
+            }
+            const recovered = await store.recoverInterruptedBatches();
+            if (recovered.length > 0) {
+              console.log(
+                `Recovered ${recovered.length} interrupted SDK Apply batch(es); review partial changes before Retry.`,
+              );
+            }
+          }
+          await store.configureSession({
+            projectKey,
+            displayName,
+            repository,
+            targetUrl: target,
+            proxyUrl: formatLoopbackOrigin(options.host, port),
+            ...(executor === "isolated-worker"
               ? {
+                  sdkWorker: {
+                    kind: "codex" as const,
+                    ownership: "visual-intent-owned" as const,
+                    source: options.workerThread
+                      ? ("cli" as const)
+                      : (persistedWorker?.source ?? ("generated" as const)),
+                    ...(workerThreadId ? { threadId: workerThreadId } : {}),
+                    ...(workerThreadId
+                      ? {
+                          attachedAt:
+                            options.workerThread || !persistedWorker?.attachedAt
+                              ? new Date().toISOString()
+                              : persistedWorker.attachedAt,
+                        }
+                      : {}),
+                  },
                   executor: {
-                    kind: "disconnected" as const,
-                    status: "disconnected" as const,
-                    ownership: "host-attached" as const,
+                    kind: "codex" as const,
+                    status:
+                      !options.workerThread &&
+                      activeExistingWorker?.status !== "busy"
+                        ? (activeExistingWorker?.status ??
+                          ("connected" as const))
+                        : ("connected" as const),
+                    ownership: "visual-intent-owned" as const,
+                    source: options.workerThread
+                      ? ("cli" as const)
+                      : (persistedWorker?.source ?? ("generated" as const)),
+                    ...(workerThreadId
+                      ? {
+                          threadId: workerThreadId,
+                          attachedAt:
+                            options.workerThread || !persistedWorker?.attachedAt
+                              ? new Date().toISOString()
+                              : persistedWorker.attachedAt,
+                        }
+                      : {}),
                   },
                 }
-              : {}),
-        });
-        daemon = await startDaemon({
-          host: options.host,
-          port,
-          target,
-          store,
-          attachmentStore: new ProjectAttachmentStore(repositoryRoot),
-          apiToken,
-          createDispatcher: (onChanged) =>
-            new CodexDispatcher({
-              store,
-              loadProjectContext: () => readProjectContext(repositoryRoot),
-              onChanged,
-            }),
-        });
-        const daemonUrl = `http://${daemon.host}:${daemon.port}`;
-        const session = await store.configureSession({
-          projectKey,
-          displayName,
-          repository,
-          targetUrl: daemon.target,
-          proxyUrl: daemonUrl,
-        });
-        await writeFile(
-          connectionPath,
-          `${JSON.stringify(
-            {
-              protocolVersion: "0.1",
-              daemonUrl,
-              apiToken,
-              projectKey,
-              repositoryRoot,
-              sessionId: session.id,
-              daemonInstanceId: daemon.instanceId,
-              taskStorePath: storePath,
-              projectContextPath: contextPath,
-            },
-            null,
-            2,
-          )}\n`,
-          { encoding: "utf8", mode: 0o600 },
-        );
-        await chmod(connectionPath, 0o600);
-        bridgeRegistration = await registerBridgeSession(
-          session,
-          daemonUrl,
-          apiToken,
-          daemon.instanceId,
-        );
+              : executor === "disconnected"
+                ? {
+                    executor: {
+                      kind: "disconnected" as const,
+                      status: "disconnected" as const,
+                      ownership: "host-attached" as const,
+                    },
+                  }
+                : {}),
+          });
+          daemon = await startDaemon({
+            host: options.host,
+            port,
+            target,
+            store,
+            attachmentStore: new ProjectAttachmentStore(repositoryRoot),
+            apiToken,
+            createDispatcher: (onChanged) =>
+              new CodexDispatcher({
+                store,
+                loadProjectContext: () => readProjectContext(repositoryRoot),
+                onChanged,
+              }),
+          });
+          await daemonLease.identify(daemon.instanceId);
+          const daemonUrl = formatLoopbackOrigin(daemon.host, daemon.port);
+          const session = await store.configureSession({
+            projectKey,
+            displayName,
+            repository,
+            targetUrl: daemon.target,
+            proxyUrl: daemonUrl,
+          });
+          await writeFile(
+            connectionPath,
+            `${JSON.stringify(
+              {
+                protocolVersion: "0.1",
+                daemonUrl,
+                apiToken,
+                projectKey,
+                repositoryRoot,
+                sessionId: session.id,
+                daemonInstanceId: daemon.instanceId,
+                taskStorePath: storePath,
+                projectContextPath: contextPath,
+              },
+              null,
+              2,
+            )}\n`,
+            { encoding: "utf8", mode: 0o600 },
+          );
+          await chmod(connectionPath, 0o600);
+          bridgeRegistration = await registerBridgeSession(
+            session,
+            daemonUrl,
+            apiToken,
+            daemon.instanceId,
+          );
 
-        console.log(`Visual Intent: ${daemonUrl}`);
-        console.log(`Proxy target:  ${daemon.target}`);
-        console.log(`Task store:    ${storePath}`);
-        console.log(`Agent repo:    ${repositoryRoot}`);
-        console.log(`Project:       ${session.displayName}`);
-        console.log(`Context:       ${contextPath}`);
-        console.log(
-          `Executor:      ${session.executor.kind} (${session.executor.ownership}, ${session.executor.status})`,
-        );
-        if (session.controller) {
-          console.log(`Controller:    Codex ${session.controller.threadId}`);
-        }
-        console.log(`Connection:    ${connectionPath}`);
-        console.log("Press Ctrl+C to stop.");
+          console.log(`Visual Intent: ${daemonUrl}`);
+          console.log(`Proxy target:  ${daemon.target}`);
+          console.log(`Task store:    ${storePath}`);
+          console.log(`Agent repo:    ${repositoryRoot}`);
+          console.log(`Project:       ${session.displayName}`);
+          console.log(`Context:       ${contextPath}`);
+          console.log(
+            `Executor:      ${session.executor.kind} (${session.executor.ownership}, ${session.executor.status})`,
+          );
+          if (session.controller) {
+            console.log(`Controller:    Codex ${session.controller.threadId}`);
+          }
+          console.log(`Connection:    ${connectionPath}`);
+          console.log("Press Ctrl+C to stop.");
 
-        await new Promise<void>((done) => {
-          const stop = (): void => {
-            process.off("SIGINT", stop);
-            process.off("SIGTERM", stop);
-            done();
-          };
-          process.on("SIGINT", stop);
-          process.on("SIGTERM", stop);
-        });
-      } finally {
-        try {
-          await daemon?.close();
+          await new Promise<void>((done) => {
+            const stop = (): void => {
+              process.off("SIGINT", stop);
+              process.off("SIGTERM", stop);
+              done();
+            };
+            process.on("SIGINT", stop);
+            process.on("SIGTERM", stop);
+          });
         } finally {
           try {
-            if (bridgeRegistration) {
-              await unregisterBridgeSession(bridgeRegistration);
-            }
+            await daemon?.close();
           } finally {
-            await workerLease?.release();
+            try {
+              if (bridgeRegistration) {
+                await unregisterBridgeSession(bridgeRegistration);
+              }
+            } finally {
+              await workerLease?.release();
+            }
           }
         }
+      } finally {
+        await daemonLease.release();
       }
     },
   );
@@ -497,6 +532,31 @@ program
   );
 
 program
+  .command("doctor")
+  .description("Run read-only checks for one Visual Intent project")
+  .option("--repo <path>", "project repository", process.cwd())
+  .option("--format <format>", "text or json", "text")
+  .option(
+    "--strict",
+    "return error-level exit code 2 when warnings are present",
+    false,
+  )
+  .action(
+    async (options: { repo: string; format: string; strict: boolean }) => {
+      if (options.format !== "text" && options.format !== "json") {
+        throw new Error("--format must be text or json");
+      }
+      const report = await runDoctor({ repo: options.repo });
+      const body =
+        options.format === "json"
+          ? `${JSON.stringify(report, null, 2)}\n`
+          : `${formatDoctorReport(report)}\n`;
+      process.stdout.write(body);
+      process.exitCode = doctorExitCode(report, options.strict);
+    },
+  );
+
+program
   .command("mcp")
   .description("Run the coding-agent bridge over MCP stdio")
   .option("--store <path>", "local task file", ".visual-intent/tasks.json")
@@ -529,6 +589,8 @@ program
     }
     await runMcpServer(store);
   });
+
+registerServiceCommands(program);
 
 await program.parseAsync();
 

@@ -13,6 +13,8 @@ import { createOverlayScript } from "@visual-intent/web-overlay";
 
 import { handleApiRequest } from "./api.js";
 import type { ProjectAttachmentStore } from "./attachment-store.js";
+import { formatLoopbackOrigin } from "./loopback-origin.js";
+import { RuntimeDiagnostics } from "./runtime-diagnostics.js";
 
 export interface DaemonOptions {
   host: string;
@@ -21,14 +23,17 @@ export interface DaemonOptions {
   store: TaskStore;
   apiToken?: string;
   attachmentStore?: ProjectAttachmentStore;
+  reconciliationIntervalMs?: number;
   createDispatcher?: (onChanged: (event: unknown) => void) => {
     enqueue(batch: ApplyBatch): void;
     idle?(): Promise<void>;
+    close?(): Promise<void>;
   };
 }
 
 export interface RunningDaemon {
   instanceId: string;
+  startedAt: string;
   host: string;
   port: number;
   target: string;
@@ -37,7 +42,22 @@ export interface RunningDaemon {
 }
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+const TERMINAL_BATCH_EVENTS = new Set([
+  "batch.completed",
+  "batch.failed",
+  "batch.needs_input",
+]);
 const require = createRequire(import.meta.url);
+
+function isTerminalBatchEvent(event: unknown): boolean {
+  return (
+    typeof event === "object" &&
+    event !== null &&
+    "type" in event &&
+    typeof event.type === "string" &&
+    TERMINAL_BATCH_EVENTS.has(event.type)
+  );
+}
 
 export function validateTarget(rawTarget: string): URL {
   const target = new URL(rawTarget);
@@ -83,7 +103,17 @@ export async function startDaemon(
 ): Promise<RunningDaemon> {
   const target = validateTarget(options.target);
   const instanceId = randomUUID();
-  const overlayScript = createOverlayScript({ apiToken: options.apiToken });
+  const startedAt = new Date().toISOString();
+  let proxyOrigin = formatLoopbackOrigin(options.host, options.port);
+  const runtimeDiagnostics = new RuntimeDiagnostics({
+    instanceId,
+    startedAt,
+    target,
+  });
+  const overlayScript = createOverlayScript({
+    apiToken: options.apiToken,
+    daemonInstanceId: instanceId,
+  });
   const html2canvasScript = await readFile(
     require.resolve("html2canvas/dist/html2canvas.min.js"),
     "utf8",
@@ -106,14 +136,77 @@ export async function startDaemon(
       if (client.readyState === WebSocket.OPEN) client.send(message);
     });
   };
-  const dispatcher = options.createDispatcher?.(broadcast);
-  const pendingBatches = await options.store.listBatches();
-  pendingBatches
-    .filter(
-      (batch) =>
-        batch.status === "queued" || batch.status === "waiting_for_executor",
-    )
-    .forEach((batch) => dispatcher?.enqueue(batch));
+  let pendingRescan: Promise<void> = Promise.resolve();
+  let rescanScheduled = false;
+  let pendingReconciliation: Promise<void> = Promise.resolve();
+  let reconciliationScheduled = false;
+
+  const enqueuePendingBatches = async (): Promise<void> => {
+    const pendingBatches = await options.store.listBatches();
+    pendingBatches
+      .filter(
+        (batch) =>
+          batch.status === "queued" || batch.status === "waiting_for_executor",
+      )
+      .forEach((batch) => dispatcher?.enqueue(batch));
+  };
+  const schedulePendingRescan = (): void => {
+    if (rescanScheduled) return;
+    rescanScheduled = true;
+    pendingRescan = pendingRescan
+      .then(() => enqueuePendingBatches())
+      .catch((error: unknown) => {
+        broadcast({
+          type: "daemon.queue_rescan_failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        rescanScheduled = false;
+      });
+  };
+  const enqueueAutonomousBatches = async (): Promise<void> => {
+    const pendingBatches = await options.store.listBatches();
+    if (pendingBatches.some((batch) => batch.status === "in_progress")) return;
+    pendingBatches
+      .filter(
+        (batch) =>
+          batch.status === "queued" &&
+          batch.executorOwnership === "visual-intent-owned",
+      )
+      .forEach((batch) => dispatcher?.enqueue(batch));
+  };
+  const scheduleAutonomousReconciliation = (): void => {
+    if (reconciliationScheduled) return;
+    reconciliationScheduled = true;
+    pendingReconciliation = pendingReconciliation
+      .then(() => enqueueAutonomousBatches())
+      .catch((error: unknown) => {
+        broadcast({
+          type: "daemon.queue_reconciliation_failed",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        reconciliationScheduled = false;
+      });
+  };
+  const onChanged = (event: unknown): void => {
+    broadcast(event);
+    if (isTerminalBatchEvent(event)) schedulePendingRescan();
+  };
+
+  const dispatcher = options.createDispatcher?.(onChanged);
+  await enqueuePendingBatches();
+  const reconciliationIntervalMs = Math.max(
+    10,
+    options.reconciliationIntervalMs ?? 500,
+  );
+  const reconciliationTimer = setInterval(
+    scheduleAutonomousReconciliation,
+    reconciliationIntervalMs,
+  );
+  reconciliationTimer.unref();
   const enqueueBatch = (batchId: string): void => {
     void options.store.getBatch(batchId).then((batch) => {
       if (batch) dispatcher?.enqueue(batch);
@@ -124,7 +217,12 @@ export async function startDaemon(
     proxyRequest.setHeader("accept-encoding", "identity");
   });
 
-  proxy.on("proxyRes", (proxyResponse, _request, response) => {
+  proxy.on("proxyRes", (proxyResponse, request, response) => {
+    runtimeDiagnostics.record({
+      kind: "proxy_response",
+      requestUrl: request.url,
+      status: proxyResponse.statusCode,
+    });
     if (!(response instanceof ServerResponse)) return;
     const contentType = String(proxyResponse.headers["content-type"] ?? "");
     const isHtml = contentType.includes("text/html");
@@ -158,7 +256,15 @@ export async function startDaemon(
     });
   });
 
-  proxy.on("error", (error, _request, response) => {
+  proxy.on("error", (error, request, response) => {
+    runtimeDiagnostics.record({
+      kind:
+        request.headers.upgrade?.toLowerCase() === "websocket"
+          ? "proxy_upgrade_error"
+          : "proxy_error",
+      requestUrl: request.url,
+      error,
+    });
     if (response instanceof ServerResponse && !response.headersSent) {
       response.writeHead(502, {
         "content-type": "application/json; charset=utf-8",
@@ -174,11 +280,16 @@ export async function startDaemon(
   const server = createServer((request, response) => {
     void (async () => {
       if (
-        await handleApiRequest(request, response, options.store, broadcast, {
+        await handleApiRequest(request, response, options.store, onChanged, {
           apiToken: options.apiToken,
           daemonInstanceId: instanceId,
           attachmentStore: options.attachmentStore,
           onBatchReady: enqueueBatch,
+          getRuntimeDiagnostics: async () =>
+            runtimeDiagnostics.snapshot({
+              proxyOrigin,
+              session: await options.store.getSession(),
+            }),
         })
       )
         return;
@@ -262,17 +373,27 @@ export async function startDaemon(
   });
 
   const address = server.address() as AddressInfo;
+  proxyOrigin = formatLoopbackOrigin(options.host, address.port);
 
   return {
     instanceId,
+    startedAt,
     host: options.host,
     port: address.port,
     target: target.href,
     async idle() {
+      await pendingRescan;
+      await pendingReconciliation;
+      await dispatcher?.idle?.();
+      await pendingRescan;
+      await pendingReconciliation;
       await dispatcher?.idle?.();
     },
     async close() {
-      await dispatcher?.idle?.();
+      clearInterval(reconciliationTimer);
+      await pendingReconciliation;
+      if (dispatcher?.close) await dispatcher.close();
+      else await dispatcher?.idle?.();
       sockets.clients.forEach((client) => client.terminate());
       connections.forEach((socket) => socket.destroy());
       proxiedSockets.forEach((socket) => socket.destroy());

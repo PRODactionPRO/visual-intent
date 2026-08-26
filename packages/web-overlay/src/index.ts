@@ -1,5 +1,83 @@
 import { ICONS } from "./icon-data.js";
 
+export const VISUAL_INTENT_ROOT_ATTRIBUTE = "data-visual-intent-root";
+export const VISUAL_INTENT_ROOT_VERSION = "v1";
+export const VISUAL_INTENT_SURFACE_ATTRIBUTE = "data-visual-intent-surface";
+export const VISUAL_INTENT_COMPOSER_ATTRIBUTE = "data-visual-intent-composer";
+
+export type VisualIntentComposedPathEvent = {
+  composedPath(): readonly unknown[];
+};
+
+/**
+ * Lets host applications ignore Visual Intent events in capture-phase handlers.
+ * Bubble-phase isolation is installed by the overlay itself, but capture listeners
+ * run before an event reaches the overlay ShadowRoot.
+ */
+export function isVisualIntentOverlayEvent(
+  event: VisualIntentComposedPathEvent,
+): boolean {
+  let path: readonly unknown[];
+  try {
+    path = event.composedPath();
+  } catch {
+    return false;
+  }
+
+  return path.some((entry) => {
+    if (!entry || (typeof entry !== "object" && typeof entry !== "function"))
+      return false;
+    const candidate = entry as {
+      getAttribute?: (name: string) => string | null;
+    };
+    if (typeof candidate.getAttribute !== "function") return false;
+    try {
+      return (
+        candidate.getAttribute(VISUAL_INTENT_ROOT_ATTRIBUTE) ===
+        VISUAL_INTENT_ROOT_VERSION
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+export type NavigationBootstrapResult = {
+  tasksLoaded: boolean;
+  runtimeLoaded: boolean;
+  timedOut: boolean;
+};
+
+export async function settleNavigationBootstrap(
+  tasks: Promise<boolean>,
+  runtime: Promise<boolean>,
+  timeoutMs = 8_000,
+): Promise<NavigationBootstrapResult> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const completed = Promise.all([
+    tasks.catch(() => false),
+    runtime.catch(() => false),
+  ]).then(([tasksLoaded, runtimeLoaded]) => ({
+    tasksLoaded,
+    runtimeLoaded,
+    timedOut: false,
+  }));
+  const expired = new Promise<NavigationBootstrapResult>((resolveResult) => {
+    timeout = setTimeout(
+      () =>
+        resolveResult({
+          tasksLoaded: false,
+          runtimeLoaded: false,
+          timedOut: true,
+        }),
+      timeoutMs,
+    );
+  });
+  const result = await Promise.race([completed, expired]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  return result;
+}
+
 export type TaskUsageAllocationSignal = {
   id: string;
   categories?: string[];
@@ -282,6 +360,7 @@ function bootOverlay(): void {
     };
   };
   type OverlaySession = {
+    id: string;
     displayName: string;
     repository: { name: string };
     executor: {
@@ -367,9 +446,12 @@ function bootOverlay(): void {
 
   const apiBase = "/_visual-intent/api";
   const apiToken = "__VISUAL_INTENT_TOKEN__";
+  const daemonInstanceId = "__VISUAL_INTENT_DAEMON_INSTANCE_ID__";
   const icons = JSON.parse("__VISUAL_INTENT_ICONS__") as Record<string, string>;
   const overlayHost = document.createElement("div");
   overlayHost.id = "visual-intent-overlay-root";
+  overlayHost.setAttribute("data-visual-intent-root", "v1");
+  overlayHost.setAttribute("data-visual-intent-bootstrap", "booting");
   for (const [property, value] of Object.entries({
     position: "fixed",
     inset: "0",
@@ -430,8 +512,8 @@ function bootOverlay(): void {
     @media(max-width:900px){.vip-toolbar{gap:10px}.vip-brand{display:none}.vip-width-control{width:128px}.vip-width-control input{width:71px}}
   </style>
   <div class="vip-shell" data-theme="light">
-    <svg class="vip-canvas" aria-hidden="true"></svg><div class="vip-highlight"></div><div class="vip-frame-box"></div><div class="vip-element-inspector"><div class="vip-element-inspector-row"><span data-inspector="tag"></span><span class="vip-element-inspector-value" data-inspector="size"></span></div><div class="vip-element-inspector-row"><span class="vip-element-inspector-label">цвет</span><span class="vip-element-inspector-value" data-inspector="color"></span></div><div class="vip-element-inspector-row"><span class="vip-element-inspector-label">шрифт</span><span class="vip-element-inspector-value vip-element-inspector-font" data-inspector="font"></span></div></div><div class="vip-anchor-layer"></div>
-    <div class="vip-toolbar" data-layout="select" role="toolbar" aria-label="Visual Intent">
+    <svg class="vip-canvas" aria-hidden="true"></svg><div class="vip-highlight"></div><div class="vip-frame-box"></div><div class="vip-element-inspector"><div class="vip-element-inspector-row"><span data-inspector="tag"></span><span class="vip-element-inspector-value" data-inspector="size"></span></div><div class="vip-element-inspector-row"><span class="vip-element-inspector-label">цвет</span><span class="vip-element-inspector-value" data-inspector="color"></span></div><div class="vip-element-inspector-row"><span class="vip-element-inspector-label">шрифт</span><span class="vip-element-inspector-value vip-element-inspector-font" data-inspector="font"></span></div></div><div class="vip-anchor-layer" data-visual-intent-surface="anchors"></div>
+    <div class="vip-toolbar" data-visual-intent-surface="toolbar" data-layout="select" role="toolbar" aria-label="Visual Intent">
       <button class="vip-menu" data-action="settings" data-tooltip="Настройки">${icon("menu")}</button>
       <div class="vip-brand" data-drag-handle><div class="vip-brand-title">Visual Intent</div><div class="vip-brand-mode">Режим просмотра</div></div>
       <div class="vip-tools">
@@ -443,12 +525,12 @@ function bootOverlay(): void {
       </div>
       <button class="vip-apply" data-action="apply" data-tooltip="Отправить задачи" disabled>Apply</button>
     </div>
-    <section class="vip-panel" aria-label="Список задач"><header class="vip-panel-top"><div class="vip-panel-heading"><span class="vip-panel-title">Список задач</span><button class="vip-panel-close" type="button" aria-label="Закрыть список задач">${icon("close")}</button></div><div class="vip-runtime"><span class="vip-runtime-dot"></span><span class="vip-runtime-project">Загрузка проекта…</span><span class="vip-runtime-executor">disconnected</span></div><div class="vip-task-tabs" role="tablist" aria-label="Состояние задач"><button class="vip-task-tab" type="button" role="tab" data-task-tab="backlog" aria-selected="true">Backlog <span class="vip-tab-count" data-tab-count="backlog">0</span></button><button class="vip-task-tab" type="button" role="tab" data-task-tab="in-progress" aria-selected="false">In progress <span class="vip-tab-count" data-tab-count="in-progress">0</span></button><button class="vip-task-tab" type="button" role="tab" data-task-tab="ready" aria-selected="false">Ready <span class="vip-tab-count" data-tab-count="ready">0</span></button></div></header><div class="vip-panel-body" role="tabpanel"><div class="vip-progress-controls" hidden><div class="vip-last-batch" hidden></div><button class="vip-wide vip-approve-dirty" hidden>Продолжить поверх текущих изменений</button><textarea class="vip-continuation" maxlength="12000" placeholder="Ответьте агенту, чтобы продолжить…" hidden></textarea><button class="vip-wide vip-retry" hidden>Повторить пакет</button></div><div class="vip-task-list"></div></div><footer class="vip-panel-footer"><button class="vip-panel-clear" type="button" data-panel-action="clear">Clear All</button><button class="vip-panel-apply" type="button" data-panel-action="apply" disabled>Apply</button></footer></section>
-    <section class="vip-composer" aria-label="Новая задача" data-has-text="false" data-multiline="false" data-has-attachments="false" data-kind="code-change"><div class="vip-drop-overlay">Перетащите сюда и отпустите изображение</div><div class="vip-attachments"></div><div class="vip-composer-main"><div class="vip-composer-content"><div class="vip-context-icon" aria-hidden="true">${icon("settings")}</div><textarea rows="1" aria-label="Комментарий" placeholder="Type a comment..."></textarea></div><div class="vip-composer-actions"><div class="vip-kind">${icon("figma")}<span>Send to Figma</span></div><button class="vip-composer-button" data-composer-action="attach-menu" data-tooltip="Добавить вложение">${icon("paperclip")}</button><button class="vip-composer-button vip-save" data-composer-action="save" data-tooltip="Добавить в задачи" data-shortcut="⌘↵" hidden>${icon("check")}</button></div></div><div class="vip-attachment-menu"><button data-composer-action="screenshot">${icon("screenshot")}<span>Сделать скриншот</span></button><button data-composer-action="upload">${icon("paperclip")}<span>Загрузить файл</span></button></div></section>
-    <input class="vip-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" multiple>
-    <div class="vip-modal-backdrop" aria-hidden="true"><section class="vip-modal" role="dialog" aria-modal="true" aria-labelledby="vip-apply-title"><h2 id="vip-apply-title">Отправить задачи?</h2><p class="vip-modal-copy"></p><div class="vip-actions"><button data-modal-action="cancel">Отмена</button><button class="vip-confirm" data-modal-action="confirm">Отправить</button></div></section></div>
-    <div class="vip-settings-backdrop" aria-hidden="true"><section class="vip-settings" role="dialog" aria-modal="true" aria-labelledby="vip-settings-title"><header class="vip-settings-header"><h2 id="vip-settings-title">Настройки</h2><button class="vip-settings-close" data-settings-action="close" aria-label="Закрыть настройки">${icon("close")}</button></header><section class="vip-settings-group"><h3>Оформление</h3><p class="vip-settings-description">Тема интерфейса Visual Intent в этом браузере.</p><div class="vip-theme-options"><button class="vip-theme-option" data-theme-value="light">Светлая</button><button class="vip-theme-option" data-theme-value="dark">Тёмная</button></div></section><section class="vip-settings-group"><h3>Работа с изменениями</h3><p class="vip-settings-description">Как отправлять задачи, если в репозитории уже есть незакоммиченные файлы.</p><div class="vip-policy-options"><button class="vip-policy-option" data-policy-value="allow-host-attached"><span class="vip-policy-radio"></span><span><span class="vip-policy-title">Передавать сразу <span class="vip-recommended">Рекомендуется</span></span><span class="vip-policy-copy">Для связанного чата: baseline сохраняется, а агент сам проверяет пересечения.</span></span></button><button class="vip-policy-option" data-policy-value="require-confirmation"><span class="vip-policy-radio"></span><span><span class="vip-policy-title">Спрашивать подтверждение</span><span class="vip-policy-copy">Останавливать каждый Apply, если рабочее дерево уже изменено.</span></span></button></div><p class="vip-settings-note">Автономный исполнитель всегда требует отдельного подтверждения — эта настройка действует только для связанного чата Codex.</p></section></section></div>
-    <div class="vip-crop-layer"><div class="vip-crop"><span class="vip-crop-handle" data-handle="nw"></span><span class="vip-crop-handle" data-handle="ne"></span><span class="vip-crop-handle" data-handle="sw"></span><span class="vip-crop-handle" data-handle="se"></span></div><div class="vip-crop-actions"><button data-crop-action="cancel">Отмена</button><button data-crop-action="capture">Сделать снимок</button></div></div>
+    <section class="vip-panel" data-visual-intent-surface="tasks" aria-label="Список задач"><header class="vip-panel-top"><div class="vip-panel-heading"><span class="vip-panel-title">Список задач</span><button class="vip-panel-close" type="button" aria-label="Закрыть список задач">${icon("close")}</button></div><div class="vip-runtime"><span class="vip-runtime-dot"></span><span class="vip-runtime-project">Загрузка проекта…</span><span class="vip-runtime-executor">disconnected</span></div><div class="vip-task-tabs" role="tablist" aria-label="Состояние задач"><button class="vip-task-tab" type="button" role="tab" data-task-tab="backlog" aria-selected="true">Backlog <span class="vip-tab-count" data-tab-count="backlog">0</span></button><button class="vip-task-tab" type="button" role="tab" data-task-tab="in-progress" aria-selected="false">In progress <span class="vip-tab-count" data-tab-count="in-progress">0</span></button><button class="vip-task-tab" type="button" role="tab" data-task-tab="ready" aria-selected="false">Ready <span class="vip-tab-count" data-tab-count="ready">0</span></button></div></header><div class="vip-panel-body" role="tabpanel"><div class="vip-progress-controls" hidden><div class="vip-last-batch" hidden></div><button class="vip-wide vip-approve-dirty" hidden>Продолжить поверх текущих изменений</button><textarea class="vip-continuation" maxlength="12000" placeholder="Ответьте агенту, чтобы продолжить…" hidden></textarea><button class="vip-wide vip-retry" hidden>Повторить пакет</button></div><div class="vip-task-list"></div></div><footer class="vip-panel-footer"><button class="vip-panel-clear" type="button" data-panel-action="clear">Clear All</button><button class="vip-panel-apply" type="button" data-panel-action="apply" disabled>Apply</button></footer></section>
+    <section class="vip-composer" data-visual-intent-surface="composer" data-visual-intent-composer="v1" aria-label="Новая задача" data-has-text="false" data-multiline="false" data-has-attachments="false" data-kind="code-change"><div class="vip-drop-overlay">Перетащите сюда и отпустите изображение</div><div class="vip-attachments"></div><div class="vip-composer-main"><div class="vip-composer-content"><div class="vip-context-icon" aria-hidden="true">${icon("settings")}</div><textarea rows="1" aria-label="Комментарий" placeholder="Type a comment..."></textarea></div><div class="vip-composer-actions"><div class="vip-kind">${icon("figma")}<span>Send to Figma</span></div><button class="vip-composer-button" data-composer-action="attach-menu" data-tooltip="Добавить вложение">${icon("paperclip")}</button><button class="vip-composer-button vip-save" data-composer-action="save" data-tooltip="Добавить в задачи" data-shortcut="⌘↵" hidden>${icon("check")}</button></div></div><div class="vip-attachment-menu"><button data-composer-action="screenshot">${icon("screenshot")}<span>Сделать скриншот</span></button><button data-composer-action="upload">${icon("paperclip")}<span>Загрузить файл</span></button></div></section>
+    <input class="vip-file-input" data-visual-intent-surface="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/heic,image/heif,.heic,.heif" multiple>
+    <div class="vip-modal-backdrop" data-visual-intent-surface="apply-dialog" aria-hidden="true"><section class="vip-modal" role="dialog" aria-modal="true" aria-labelledby="vip-apply-title"><h2 id="vip-apply-title">Отправить задачи?</h2><p class="vip-modal-copy"></p><div class="vip-actions"><button data-modal-action="cancel">Отмена</button><button class="vip-confirm" data-modal-action="confirm">Отправить</button></div></section></div>
+    <div class="vip-settings-backdrop" data-visual-intent-surface="settings" aria-hidden="true"><section class="vip-settings" role="dialog" aria-modal="true" aria-labelledby="vip-settings-title"><header class="vip-settings-header"><h2 id="vip-settings-title">Настройки</h2><button class="vip-settings-close" data-settings-action="close" aria-label="Закрыть настройки">${icon("close")}</button></header><section class="vip-settings-group"><h3>Оформление</h3><p class="vip-settings-description">Тема интерфейса Visual Intent в этом браузере.</p><div class="vip-theme-options"><button class="vip-theme-option" data-theme-value="light">Светлая</button><button class="vip-theme-option" data-theme-value="dark">Тёмная</button></div></section><section class="vip-settings-group"><h3>Работа с изменениями</h3><p class="vip-settings-description">Как отправлять задачи, если в репозитории уже есть незакоммиченные файлы.</p><div class="vip-policy-options"><button class="vip-policy-option" data-policy-value="allow-host-attached"><span class="vip-policy-radio"></span><span><span class="vip-policy-title">Передавать сразу <span class="vip-recommended">Рекомендуется</span></span><span class="vip-policy-copy">Для связанного чата: baseline сохраняется, а агент сам проверяет пересечения.</span></span></button><button class="vip-policy-option" data-policy-value="require-confirmation"><span class="vip-policy-radio"></span><span><span class="vip-policy-title">Спрашивать подтверждение</span><span class="vip-policy-copy">Останавливать каждый Apply, если рабочее дерево уже изменено.</span></span></button></div><p class="vip-settings-note">Автономный исполнитель всегда требует отдельного подтверждения — эта настройка действует только для связанного чата Codex.</p></section></section></div>
+    <div class="vip-crop-layer" data-visual-intent-surface="screenshot"><div class="vip-crop"><span class="vip-crop-handle" data-handle="nw"></span><span class="vip-crop-handle" data-handle="ne"></span><span class="vip-crop-handle" data-handle="sw"></span><span class="vip-crop-handle" data-handle="se"></span></div><div class="vip-crop-actions"><button data-crop-action="cancel">Отмена</button><button data-crop-action="capture">Сделать снимок</button></div></div>
     <div class="vip-tooltip"><span></span><kbd hidden></kbd></div><div class="vip-toast"></div>
   </div>`;
 
@@ -527,6 +609,49 @@ function bootOverlay(): void {
   const cropActions = required<HTMLElement>(".vip-crop-actions");
   const tooltip = required<HTMLElement>(".vip-tooltip");
   const toastElement = required<HTMLElement>(".vip-toast");
+
+  const eventPathHasMarker = (event: Event, attribute: string): boolean =>
+    event
+      .composedPath()
+      .some(
+        (entry) => entry instanceof Element && entry.hasAttribute(attribute),
+      );
+  const stopSurfaceBubble = (event: Event): void => {
+    if (eventPathHasMarker(event, "data-visual-intent-surface"))
+      event.stopPropagation();
+  };
+  const stopComposerBubble = (event: Event): void => {
+    if (eventPathHasMarker(event, "data-visual-intent-composer"))
+      event.stopPropagation();
+  };
+
+  // These listeners run in the ShadowRoot bubble phase. Native interaction has
+  // already reached the target, while host document/window bubble listeners have
+  // not. Capture-phase host listeners must use isVisualIntentOverlayEvent().
+  for (const eventName of [
+    "pointerdown",
+    "pointerup",
+    "mousedown",
+    "mouseup",
+    "click",
+    "contextmenu",
+    "focusin",
+    "focusout",
+  ])
+    shadow.addEventListener(eventName, stopSurfaceBubble);
+  for (const eventName of [
+    "keydown",
+    "keyup",
+    "beforeinput",
+    "input",
+    "compositionstart",
+    "compositionupdate",
+    "compositionend",
+    "paste",
+    "copy",
+    "cut",
+  ])
+    shadow.addEventListener(eventName, stopComposerBubble);
 
   let mode: Mode = "idle";
   let previousMode: Mode = "idle";
@@ -3240,7 +3365,7 @@ function bootOverlay(): void {
     groups.forEach((group) => taskList.append(renderReadyBatch(group)));
   }
 
-  async function loadTasks(): Promise<void> {
+  async function loadTasks(): Promise<boolean> {
     try {
       const response = await apiFetch(`${apiBase}/tasks`);
       if (!response.ok) throw await responseError(response);
@@ -3249,8 +3374,10 @@ function bootOverlay(): void {
       updateTaskCount();
       renderTaskPanel();
       renderAnchors();
+      return true;
     } catch (error) {
       showToast(`Не удалось загрузить задачи: ${String(error)}`);
+      return false;
     }
   }
   function appendDetails(
@@ -3266,7 +3393,7 @@ function bootOverlay(): void {
     details.append(summary, pre);
     parent.append(details);
   }
-  async function loadRuntime(): Promise<void> {
+  async function loadRuntime(): Promise<boolean> {
     try {
       const [sessionResponse, batchesResponse, executionsResponse] =
         await Promise.all([
@@ -3313,7 +3440,7 @@ function bootOverlay(): void {
         continuationInput.hidden = true;
         continuationInput.value = "";
         retryButton.hidden = true;
-        return;
+        return true;
       }
       lastBatch.hidden = false;
       lastBatch.dataset.status = batch.status;
@@ -3401,12 +3528,14 @@ function bootOverlay(): void {
       approveDirtyButton.hidden = !dirty || !baseline;
       approveDirtyButton.dataset.batchId = batch.id;
       if (baseline) approveDirtyButton.dataset.baselineFingerprint = baseline;
+      return true;
     } catch {
       currentSession = null;
       continuationInput.hidden = true;
       runtime.dataset.connected = "false";
       runtimeProject.textContent = "Visual Intent недоступен";
       runtimeExecutor.textContent = "отключён";
+      return false;
     }
   }
 
@@ -3903,6 +4032,13 @@ function bootOverlay(): void {
       tooltip.dataset.visible = "false";
   });
   textarea.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      cancelComposerDraft();
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      return;
+    }
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       void saveTask();
@@ -4000,6 +4136,29 @@ function bootOverlay(): void {
     });
     socket.addEventListener("close", () => setTimeout(connectSocket, 1500));
   }
+  async function runInitialBootstrap(): Promise<void> {
+    const result = await settleNavigationBootstrap(
+      loadTasks(),
+      loadRuntime(),
+      8_000,
+    );
+    const status =
+      result.tasksLoaded && result.runtimeLoaded ? "ready" : "degraded";
+    const readyAt = new Date().toISOString();
+    overlayHost.setAttribute("data-visual-intent-bootstrap", status);
+    document.dispatchEvent(
+      new CustomEvent("visual-intent:navigation-ready", {
+        detail: {
+          version: "v1",
+          status,
+          daemonInstanceId: daemonInstanceId || null,
+          sessionId: currentSession?.id ?? null,
+          url: location.href,
+          readyAt,
+        },
+      }),
+    );
+  }
   addEventListener("resize", () => {
     restoreToolbarPosition();
     refreshPositions();
@@ -4009,15 +4168,15 @@ function bootOverlay(): void {
   requestAnimationFrame(restoreToolbarPosition);
   renderDrawings();
   updateTaskCount();
-  void loadTasks();
-  void loadRuntime();
+  void runInitialBootstrap();
   connectSocket();
 }
 
 export function createOverlayScript(
-  options: { apiToken?: string } = {},
+  options: { apiToken?: string; daemonInstanceId?: string } = {},
 ): string {
   const allocator = allocateEstimatedTaskUsage.toString();
+  const bootstrapSettler = settleNavigationBootstrap.toString();
   const source = bootOverlay
     .toString()
     .replace(
@@ -4025,8 +4184,12 @@ export function createOverlayScript(
       JSON.stringify(options.apiToken ?? ""),
     )
     .replace(
+      '"__VISUAL_INTENT_DAEMON_INSTANCE_ID__"',
+      JSON.stringify(options.daemonInstanceId ?? ""),
+    )
+    .replace(
       '"__VISUAL_INTENT_ICONS__"',
       JSON.stringify(JSON.stringify(ICONS)),
     );
-  return `;(()=>{const allocateEstimatedTaskUsage=${allocator};(${source})();})();`;
+  return `;(()=>{const allocateEstimatedTaskUsage=${allocator};const settleNavigationBootstrap=${bootstrapSettler};(${source})();})();`;
 }

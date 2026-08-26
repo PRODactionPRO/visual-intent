@@ -8,6 +8,7 @@ export default tseslint.config(
       "**/coverage/**",
       "**/node_modules/**",
       ".turbo/**",
+      ".visual-intent/**",
     ],
   },
   eslint.configs.recommended,

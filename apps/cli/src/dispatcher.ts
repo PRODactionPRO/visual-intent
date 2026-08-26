@@ -116,6 +116,7 @@ export interface CodexRunInput {
   repositoryRoot: string;
   threadId?: string;
   prompt: string;
+  signal?: AbortSignal;
   onThreadStarted?: (threadId: string) => Promise<void>;
 }
 
@@ -217,6 +218,18 @@ export class SdkCodexRunner implements CodexRunner {
   ) {}
 
   async run(input: CodexRunInput): Promise<CodexRunOutput> {
+    const cancellation = createCodexCancellationScope(input.signal);
+    try {
+      return await this.runWithSignal(input, cancellation.signal);
+    } finally {
+      cancellation.dispose();
+    }
+  }
+
+  private async runWithSignal(
+    input: CodexRunInput,
+    signal: AbortSignal,
+  ): Promise<CodexRunOutput> {
     const options = {
       workingDirectory: input.repositoryRoot,
       sandboxMode: "workspace-write" as const,
@@ -230,6 +243,7 @@ export class SdkCodexRunner implements CodexRunner {
     const startedAt = new Date().toISOString();
     const streamed = await thread.runStreamed(input.prompt, {
       outputSchema: AGENT_RESULT_JSON_SCHEMA,
+      signal,
     });
     const items: ThreadItem[] = [];
     let finalResponse = "";
@@ -289,6 +303,36 @@ export class SdkCodexRunner implements CodexRunner {
   }
 }
 
+function createCodexCancellationScope(external?: AbortSignal): {
+  signal: AbortSignal;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  const abort = (reason: unknown): void => {
+    if (!controller.signal.aborted) controller.abort(reason);
+  };
+  const onSigint = (): void => abort(new Error("Received SIGINT"));
+  const onSigterm = (): void => abort(new Error("Received SIGTERM"));
+  const onExternalAbort = (): void => abort(external?.reason);
+
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  if (external?.aborted) {
+    onExternalAbort();
+  } else {
+    external?.addEventListener("abort", onExternalAbort, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    dispose(): void {
+      process.off("SIGINT", onSigint);
+      process.off("SIGTERM", onSigterm);
+      external?.removeEventListener("abort", onExternalAbort);
+    },
+  };
+}
+
 export interface CodexDispatcherOptions {
   store: TaskStore;
   runner?: CodexRunner;
@@ -300,6 +344,8 @@ export interface CodexDispatcherOptions {
 export class CodexDispatcher {
   private queue: Promise<void> = Promise.resolve();
   private readonly scheduled = new Set<string>();
+  private readonly shutdown = new AbortController();
+  private closed = false;
   private readonly runner: CodexRunner;
   private readonly hostDelivery: HostBatchDelivery;
   private readonly onChanged: (event: unknown) => void;
@@ -312,6 +358,7 @@ export class CodexDispatcher {
 
   enqueue(batch: ApplyBatch): void {
     if (
+      this.closed ||
       (batch.status !== "queued" && batch.status !== "waiting_for_executor") ||
       this.scheduled.has(batch.id)
     )
@@ -333,7 +380,18 @@ export class CodexDispatcher {
     await this.queue;
   }
 
+  async close(): Promise<void> {
+    if (!this.closed) {
+      this.closed = true;
+      this.shutdown.abort(
+        new DOMException("Visual Intent daemon is shutting down", "AbortError"),
+      );
+    }
+    await this.queue;
+  }
+
   private async route(batchId: string): Promise<void> {
+    if (this.closed) return;
     const session = await this.options.store.getSession();
     if (!session) return;
     if (session.executor.kind !== "codex") return;
@@ -424,6 +482,7 @@ export class CodexDispatcher {
       output = await this.runner.run({
         repositoryRoot: session.repository.root,
         threadId: session.executor.threadId,
+        signal: this.shutdown.signal,
         prompt: buildPrompt(
           session.displayName,
           claimed.batch,
@@ -482,9 +541,12 @@ export class CodexDispatcher {
       const message = error instanceof Error ? error.message : String(error);
       const activeWriter = isActiveWriterConflict(message);
       const invalidJsonSchema = isInvalidJsonSchemaFailure(message);
-      const summary = activeWriter
-        ? "The isolated Codex worker is already active in another process."
-        : "Codex execution failed. The batch was preserved.";
+      const interrupted = isInterruptedExecution(error);
+      const summary = interrupted
+        ? "Codex execution was interrupted. Review partial changes before Retry."
+        : activeWriter
+          ? "The isolated Codex worker is already active in another process."
+          : "Codex execution failed. The batch was preserved.";
       const finished = await this.options.store.finishBatch(
         batchId,
         "failed",
@@ -493,12 +555,14 @@ export class CodexDispatcher {
           changedFiles: [],
           notes: ["No commit or push was performed by Visual Intent."],
           technicalDetails: message,
-          retryable: activeWriter || invalidJsonSchema,
-          failureCode: activeWriter
-            ? "isolated_worker_active_writer"
-            : invalidJsonSchema
-              ? "codex_invalid_json_schema"
-              : "codex_execution_failed",
+          retryable: interrupted || activeWriter || invalidJsonSchema,
+          failureCode: interrupted
+            ? "worker_interrupted"
+            : activeWriter
+              ? "isolated_worker_active_writer"
+              : invalidJsonSchema
+                ? "codex_invalid_json_schema"
+                : "codex_execution_failed",
           executionId,
           taskResults: claimed.tasks.map((task) => ({
             taskId: task.id,
@@ -616,6 +680,13 @@ function isActiveWriterConflict(message: string): boolean {
 
 function isInvalidJsonSchemaFailure(message: string): boolean {
   return /invalid_json_schema/iu.test(message);
+}
+
+function isInterruptedExecution(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  if (error instanceof Error && error.name === "AbortError") return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /aborted|received sigint|received sigterm/iu.test(message);
 }
 
 function validateTaskResults(

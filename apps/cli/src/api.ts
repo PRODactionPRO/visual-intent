@@ -31,6 +31,7 @@ import {
 import { ZodError, z } from "zod";
 
 import type { ProjectAttachmentStore } from "./attachment-store.js";
+import type { RuntimeDiagnosticsSnapshot } from "./runtime-diagnostics.js";
 
 const BODY_LIMIT_BYTES = 1024 * 1024;
 const ATTACHMENT_LIMIT_BYTES = 10 * 1024 * 1024;
@@ -110,6 +111,7 @@ export async function handleApiRequest(
     daemonInstanceId?: string;
     onBatchReady?: (batchId: string) => void;
     attachmentStore?: ProjectAttachmentStore;
+    getRuntimeDiagnostics?: () => Promise<RuntimeDiagnosticsSnapshot>;
   } = {},
 ): Promise<boolean> {
   const url = new URL(
@@ -117,6 +119,19 @@ export async function handleApiRequest(
     `http://${request.headers.host ?? "127.0.0.1"}`,
   );
   if (!url.pathname.startsWith("/_visual-intent/api/")) return false;
+
+  const isDiagnosticsRequest =
+    request.method === "GET" &&
+    url.pathname === "/_visual-intent/api/diagnostics";
+
+  if (
+    isDiagnosticsRequest &&
+    (!options.apiToken ||
+      request.headers["x-visual-intent-token"] !== options.apiToken)
+  ) {
+    json(response, 403, { error: "Invalid Visual Intent session token" });
+    return true;
+  }
 
   if (
     request.method !== "GET" &&
@@ -142,6 +157,11 @@ export async function handleApiRequest(
           : {}),
         session: await store.getSession(),
       });
+      return true;
+    }
+
+    if (isDiagnosticsRequest && options.getRuntimeDiagnostics) {
+      json(response, 200, await options.getRuntimeDiagnostics());
       return true;
     }
 

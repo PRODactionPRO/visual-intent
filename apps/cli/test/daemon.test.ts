@@ -1,16 +1,23 @@
 import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { TaskStore } from "@visual-intent/core";
+import { FileTaskStore } from "@visual-intent/file-store";
+import type { CreateTask } from "@visual-intent/protocol";
 
 import {
   injectOverlayTag,
   startDaemon,
   validateTarget,
 } from "../src/daemon.js";
+import { CodexDispatcher, type CodexRunner } from "../src/dispatcher.js";
 
 const closers: Array<() => Promise<void>> = [];
+const temporaryDirectories: string[] = [];
 
 const store: TaskStore = {
   async list() {
@@ -90,6 +97,11 @@ const store: TaskStore = {
 
 afterEach(async () => {
   await Promise.all(closers.splice(0).map((close) => close()));
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true })),
+  );
 });
 
 describe("local daemon", () => {
@@ -160,6 +172,61 @@ describe("local daemon", () => {
     });
   });
 
+  it("protects diagnostics with the session token and survives a dead target", async () => {
+    const targetServer = createServer();
+    await new Promise<void>((resolve) =>
+      targetServer.listen(0, "127.0.0.1", resolve),
+    );
+    const address = targetServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Target server did not start");
+    }
+    await new Promise<void>((resolve, reject) =>
+      targetServer.close((error) => (error ? reject(error) : resolve())),
+    );
+
+    const daemon = await startDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      target: `http://127.0.0.1:${address.port}`,
+      store,
+      apiToken: "diagnostics-token",
+    });
+    closers.push(() => daemon.close());
+    const diagnosticsUrl = `http://127.0.0.1:${daemon.port}/_visual-intent/api/diagnostics`;
+
+    expect((await fetch(diagnosticsUrl)).status).toBe(403);
+    const diagnostics = await fetch(diagnosticsUrl, {
+      headers: { "x-visual-intent-token": "diagnostics-token" },
+    });
+    expect(diagnostics.status).toBe(200);
+    expect(await diagnostics.json()).toEqual(
+      expect.objectContaining({
+        daemon: expect.objectContaining({
+          instanceId: daemon.instanceId,
+          startedAt: daemon.startedAt,
+          protocolVersion: "0.1",
+        }),
+        proxy: expect.objectContaining({ reachable: true }),
+        target: expect.objectContaining({
+          reachable: false,
+          errorCode: "ECONNREFUSED",
+        }),
+      }),
+    );
+
+    const health = await fetch(
+      `http://127.0.0.1:${daemon.port}/_visual-intent/api/health`,
+    );
+    expect(health.status).toBe(200);
+    const overlay = await fetch(
+      `http://127.0.0.1:${daemon.port}/_visual-intent/overlay.js`,
+    );
+    expect(await overlay.text()).toContain(
+      `const daemonInstanceId = "${daemon.instanceId}"`,
+    );
+  });
+
   it("re-enqueues a persisted autonomous Apply batch after daemon restart", async () => {
     const queuedBatch = {
       id: "batch-restart",
@@ -190,5 +257,174 @@ describe("local daemon", () => {
 
     expect(enqueue).toHaveBeenCalledOnce();
     expect(enqueue).toHaveBeenCalledWith(queuedBatch);
+  });
+
+  it("reconciles an isolated batch after direct stdio-store completion of a host batch", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "visual-intent-daemon-"));
+    temporaryDirectories.push(directory);
+    const repository = { root: directory, name: "target" };
+    const store = new FileTaskStore(join(directory, "tasks.json"), repository, {
+      captureWorkingTreeBaseline: async () => ({
+        capturedAt: new Date().toISOString(),
+        fingerprint: "clean",
+        files: [],
+      }),
+    });
+    const sessionInput = {
+      projectKey: "target",
+      displayName: "Target",
+      repository,
+      targetUrl: "http://127.0.0.1:5173",
+      proxyUrl: "http://127.0.0.1:7310",
+    };
+    await store.configureSession(sessionInput);
+    await store.attachExecutor({
+      repositoryRoot: repository.root,
+      threadId: "thread-host",
+      ownership: "host-attached",
+      source: "plugin",
+    });
+    const taskInput = (instruction: string, id: string): CreateTask => ({
+      protocolVersion: "0.1",
+      kind: "code-change",
+      surface: {
+        id: `surface-${id}`,
+        platform: "web",
+        uri: "http://127.0.0.1:7310",
+        adapter: { name: "test", version: "0.1.0" },
+      },
+      nodes: [],
+      regions: [],
+      frames: [],
+      relations: [],
+      annotations: [],
+      attachments: [],
+      intent: {
+        id: `intent-${id}`,
+        action: "change",
+        instruction,
+        acceptanceCriteria: [],
+      },
+    });
+
+    const hostTask = await store.create(
+      taskInput("Finish the host task", "host"),
+    );
+    const hostBatch = await store.dispatchReady();
+    if (!hostBatch) throw new Error("Expected the host batch");
+    const claimedHost = await store.claimBatch(hostBatch.id, {
+      controllerThreadId: "thread-host",
+    });
+    if (!claimedHost.batch.claim) throw new Error("Expected a host claim");
+
+    await store.configureSession({
+      ...sessionInput,
+      executor: {
+        kind: "codex",
+        status: "connected",
+        ownership: "visual-intent-owned",
+        source: "generated",
+      },
+    });
+    const isolatedTask = await store.create(
+      taskInput("Run after the host task", "isolated"),
+    );
+    const isolatedBatch = await store.dispatchReady();
+    if (!isolatedBatch) throw new Error("Expected the isolated batch");
+
+    const run = vi.fn<CodexRunner["run"]>().mockResolvedValue({
+      threadId: "thread-isolated",
+      response: JSON.stringify({
+        status: "needs_input",
+        summary: "Need a product choice",
+        changedFiles: [],
+        notes: [],
+        taskResults: [
+          {
+            taskId: isolatedTask.id,
+            status: "needs_input",
+            summary: "Need a product choice",
+            changedFiles: [],
+            notes: [],
+            classification: { categories: ["behavior"], scale: "element" },
+          },
+        ],
+      }),
+      usage: { availability: "unavailable", reason: "test runner" },
+      operations: {
+        completeness: "complete",
+        sdkTurns: 1,
+        commandExecutions: 0,
+        mcpToolCalls: 0,
+        webSearches: 0,
+        fileChangeOperations: 0,
+        failedOperations: 0,
+        uniqueChangedPaths: 0,
+      },
+      startedAt: "2026-08-26T00:00:00.000Z",
+      completedAt: "2026-08-26T00:00:01.000Z",
+    });
+    const runner: CodexRunner = { run };
+    const daemon = await startDaemon({
+      host: "127.0.0.1",
+      port: 0,
+      target: "http://127.0.0.1:5173",
+      store,
+      apiToken: "test-token",
+      reconciliationIntervalMs: 10,
+      createDispatcher: (onChanged) =>
+        new CodexDispatcher({ store, runner, onChanged }),
+    });
+    closers.push(() => daemon.close());
+
+    await daemon.idle();
+    expect(run).not.toHaveBeenCalled();
+    expect((await store.getBatch(isolatedBatch.id))?.status).toBe("queued");
+
+    const externalStore = new FileTaskStore(
+      join(directory, "tasks.json"),
+      repository,
+      {
+        captureWorkingTreeBaseline: async () => ({
+          capturedAt: new Date().toISOString(),
+          fingerprint: "clean",
+          files: [],
+        }),
+      },
+    );
+    await externalStore.finishBatch(
+      hostBatch.id,
+      "needs_input",
+      {
+        summary: "Host task needs input",
+        changedFiles: [],
+        notes: [],
+        taskResults: [
+          {
+            taskId: hostTask.id,
+            status: "needs_input",
+            summary: "Host task needs input",
+            changedFiles: [],
+            notes: [],
+            classification: {
+              categories: ["behavior"],
+              scale: "element",
+            },
+          },
+        ],
+      },
+      {
+        claimId: claimedHost.batch.claim.id,
+        expectedAttempt: claimedHost.batch.attempt,
+        controllerThreadId: "thread-host",
+      },
+    );
+
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    await daemon.idle();
+    expect((await store.getBatch(isolatedBatch.id))?.status).toBe(
+      "needs_input",
+    );
+    expect(run).toHaveBeenCalledOnce();
   });
 });

@@ -22,21 +22,55 @@
       iframe {
         width: 100%;
         height: 360px;
-        margin-top: 20px;
         border: 1px solid #cbd5e1;
         border-radius: 20px;
         background: white;
+      }
+      section {
+        margin-top: 28px;
+      }
+      h2 {
+        margin-bottom: 6px;
+        font-size: 20px;
+      }
+      section p {
+        margin-top: 0;
+        color: #526077;
       }
     </style>
   </head>
   <body>
     <main>
       <h1>Проверка выбора внутри iframe</h1>
-      <p>Запустите Select и выберите синюю кнопку внутри карточки ниже.</p>
-      <iframe
-        title="Тестовый встроенный интерфейс"
-        src="/iframe-child.html"
-      ></iframe>
+      <p>
+        Здесь можно проверить доступный iframe и безопасный fallback, когда
+        Chrome не получил разрешение на сторонний origin.
+      </p>
+      <section>
+        <h2>Same-origin iframe</h2>
+        <p>Выберите синюю кнопку внутри карточки.</p>
+        <iframe
+          title="Доступный встроенный интерфейс"
+          src="/iframe-child.html?fixture=same-origin#button"
+        ></iframe>
+      </section>
+      <section>
+        <h2>Cross-origin iframe</h2>
+        <p>
+          Разрешите origin, чтобы выбрать кнопку внутри, или отклоните запрос,
+          чтобы выбрать внешний контейнер iframe целиком.
+        </p>
+        <iframe
+          id="cross-origin-frame"
+          title="Сторонний встроенный интерфейс"
+        ></iframe>
+      </section>
     </main>
+    <script>
+      const frame = document.querySelector("#cross-origin-frame");
+      const alternateHost =
+        location.hostname === "127.0.0.1" ? "localhost" : "127.0.0.1";
+      frame.src = `${location.protocol}//${alternateHost}:${location.port}/iframe-child.html?fixture=cross-origin&token=not-captured#button`;
+    </script>
   </body>
 </html>

@@ -13,6 +13,36 @@ export interface EmbeddedFrameContext {
   topLevelUrl?: string;
 }
 
+export interface UnavailableFrameBoundary {
+  frameUrl?: string;
+  title?: string;
+  sandbox?: string;
+  allow?: string;
+}
+
+/**
+ * Describes only the outer iframe boundary. The embedded document itself is
+ * deliberately not inspected when Chrome did not inject the selector there.
+ */
+export function describeUnavailableFrameBoundary(
+  boundary: UnavailableFrameBoundary,
+): Record<string, string> {
+  const attributes: Record<string, string> = {
+    "visual-intent:frame-boundary": "true",
+    "visual-intent:frame-content-captured": "false",
+    "visual-intent:frame-access": "denied-or-unavailable",
+  };
+  const frameUrl = cleanUrl(boundary.frameUrl);
+  if (frameUrl) attributes["visual-intent:frame-uri"] = frameUrl;
+  const title = cleanLabel(boundary.title);
+  if (title) attributes["visual-intent:frame-title"] = title;
+  const sandbox = cleanLabel(boundary.sandbox);
+  if (sandbox) attributes["visual-intent:frame-sandbox"] = sandbox;
+  const allow = cleanLabel(boundary.allow);
+  if (allow) attributes["visual-intent:frame-allow"] = allow;
+  return attributes;
+}
+
 export function collectCrossOriginFramePermissions(
   frames: BrowserFrameSummary[],
 ): string[] {
@@ -76,6 +106,11 @@ function cleanUrl(rawUrl?: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function cleanLabel(value?: string): string | undefined {
+  const cleaned = value?.replace(/\s+/gu, " ").trim().slice(0, 500);
+  return cleaned || undefined;
 }
 
 function asStringRecord(value: unknown): Record<string, string> {

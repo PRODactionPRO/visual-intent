@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   addEmbeddedFrameContext,
   collectCrossOriginFramePermissions,
+  describeUnavailableFrameBoundary,
 } from "../src/frame-access.js";
 import type { CapturedReference } from "../src/types.js";
 
@@ -64,6 +65,38 @@ describe("Chrome iframe access", () => {
       "visual-intent:parent-browser-frame-id": "0",
       "visual-intent:frame-uri": "https://widgets.example/card",
       "visual-intent:container-uri": "https://product.example/page",
+    });
+  });
+
+  it("describes an unavailable iframe without exposing URL secrets or content", () => {
+    expect(
+      describeUnavailableFrameBoundary({
+        frameUrl:
+          "https://user:secret@widgets.example/card?token=secret#private",
+        title: "  Платёжный   виджет  ",
+        sandbox: "allow-forms allow-same-origin",
+        allow: "fullscreen; clipboard-write",
+      }),
+    ).toEqual({
+      "visual-intent:frame-boundary": "true",
+      "visual-intent:frame-content-captured": "false",
+      "visual-intent:frame-access": "denied-or-unavailable",
+      "visual-intent:frame-uri": "https://widgets.example/card",
+      "visual-intent:frame-title": "Платёжный виджет",
+      "visual-intent:frame-sandbox": "allow-forms allow-same-origin",
+      "visual-intent:frame-allow": "fullscreen; clipboard-write",
+    });
+  });
+
+  it("does not retain non-http frame sources in a fallback reference", () => {
+    expect(
+      describeUnavailableFrameBoundary({
+        frameUrl: "data:text/html,<script>window.secret</script>",
+      }),
+    ).toEqual({
+      "visual-intent:frame-boundary": "true",
+      "visual-intent:frame-content-captured": "false",
+      "visual-intent:frame-access": "denied-or-unavailable",
     });
   });
 });

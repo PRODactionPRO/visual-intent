@@ -1,4 +1,5 @@
 import type { CapturedReference, ReferenceTask } from "./types.js";
+import { describeUnavailableFrameBoundary } from "./frame-access.js";
 
 const MAX_NODES = 40;
 const MAX_TEXT_LENGTH = 500;
@@ -70,25 +71,62 @@ const STYLE_PROPERTIES = [
   "cursor",
 ] as const;
 
-export function captureReference(element: Element): CapturedReference {
+export interface CaptureReferenceOptions {
+  unavailableFrameBoundary?: boolean;
+}
+
+export function captureReference(
+  element: Element,
+  options: CaptureReferenceOptions = {},
+): CapturedReference {
   const surfaceId = crypto.randomUUID();
   const frameId = crypto.randomUUID();
   const regionId = crypto.randomUUID();
   const pageUrl = cleanSourceUrl(location.href);
-  const elements = [element, ...Array.from(element.querySelectorAll("*"))]
-    .filter(isSafeElement)
+  const isUnavailableFrameBoundary =
+    options.unavailableFrameBoundary === true &&
+    element instanceof HTMLIFrameElement;
+  const descendants = isUnavailableFrameBoundary
+    ? []
+    : Array.from(element.querySelectorAll("*"));
+  const elements = [element, ...descendants]
+    .filter(
+      (candidate, index) =>
+        isSafeElement(candidate) ||
+        (index === 0 &&
+          isUnavailableFrameBoundary &&
+          candidate instanceof HTMLIFrameElement),
+    )
     .slice(0, MAX_NODES);
   const nodeIds = new Map<Element, string>();
   elements.forEach((candidate) => nodeIds.set(candidate, crypto.randomUUID()));
-  const nodes = elements.map((candidate) => ({
-    id: nodeIds.get(candidate),
-    surfaceId,
-    kind: "element",
-    name: candidate.tagName.toLowerCase(),
-    stableSelector: selectorFor(candidate),
-    text: directText(candidate),
-    attributes: captureAttributes(candidate),
-  }));
+  const nodes = elements.map((candidate) => {
+    const attributes = captureAttributes(candidate);
+    if (
+      isUnavailableFrameBoundary &&
+      candidate === element &&
+      candidate instanceof HTMLIFrameElement
+    ) {
+      Object.assign(
+        attributes,
+        describeUnavailableFrameBoundary({
+          frameUrl: candidate.src,
+          title: candidate.title,
+          sandbox: candidate.getAttribute("sandbox") ?? undefined,
+          allow: candidate.getAttribute("allow") ?? undefined,
+        }),
+      );
+    }
+    return {
+      id: nodeIds.get(candidate),
+      surfaceId,
+      kind: "element",
+      name: candidate.tagName.toLowerCase(),
+      stableSelector: selectorFor(candidate),
+      text: directText(candidate),
+      attributes,
+    };
+  });
   const relations: Array<Record<string, unknown>> = [];
   const rootNodeId = nodeIds.get(element);
   if (!rootNodeId) throw new Error("Не удалось определить выбранный элемент");
@@ -164,7 +202,18 @@ export function createReferenceTask(
   comment: string,
 ): ReferenceTask {
   const annotationId = crypto.randomUUID();
-  const sourceHost = new URL(String(reference.surface.uri)).hostname;
+  const rootNode = reference.nodes.find(
+    (node) => node.id === reference.rootNodeId,
+  );
+  const rootAttributes = asStringRecord(rootNode?.attributes);
+  const isUnavailableFrameBoundary =
+    rootAttributes["visual-intent:frame-boundary"] === "true" &&
+    rootAttributes["visual-intent:frame-content-captured"] === "false";
+  const sourceHost = new URL(
+    isUnavailableFrameBoundary && rootAttributes["visual-intent:frame-uri"]
+      ? rootAttributes["visual-intent:frame-uri"]
+      : String(reference.surface.uri),
+  ).hostname;
   return {
     protocolVersion: "0.1",
     kind: "code-change",
@@ -195,7 +244,9 @@ export function createReferenceTask(
     intent: {
       id: crypto.randomUUID(),
       action: "change",
-      instruction: `Используй выбранный компонент с ${sourceHost} как визуальный референс. ${comment}`,
+      instruction: isUnavailableFrameBoundary
+        ? `Используй внешний контейнер iframe с ${sourceHost} как визуальный референс. Внутренний DOM встроенного документа не был доступен и не включён в пакет; не додумывай его структуру. ${comment}`
+        : `Используй выбранный компонент с ${sourceHost} как визуальный референс. ${comment}`,
       acceptanceCriteria: [],
     },
   };
@@ -305,4 +356,13 @@ function selectorFor(element: Element): string {
     current = current.parentElement;
   }
   return parts.join(" > ");
+}
+
+function asStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
 }

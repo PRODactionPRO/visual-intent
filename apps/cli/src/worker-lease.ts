@@ -25,8 +25,17 @@ export interface ProjectWorkerLease {
   release(): Promise<void>;
 }
 
+export interface ProjectWorkerLeaseOptions {
+  /**
+   * Remove a dead or malformed lease only after the caller has verified that
+   * no orphaned Codex process is still editing the repository.
+   */
+  forceRecoverStale?: boolean;
+}
+
 export async function acquireProjectWorkerLease(
   repositoryRoot: string,
+  options: ProjectWorkerLeaseOptions = {},
 ): Promise<ProjectWorkerLease> {
   const directory = join(repositoryRoot, ".visual-intent");
   const leasePath = join(directory, LEASE_FILE_NAME);
@@ -58,6 +67,10 @@ export async function acquireProjectWorkerLease(
       await delay(INVALID_LOCK_SETTLE_MS);
       const settled = await readSnapshot(leasePath);
       if (!settled || settled.raw !== observed.raw) continue;
+    }
+
+    if (!options.forceRecoverStale) {
+      throw staleWorkerError(leasePath, observed.lease?.pid);
     }
 
     const removed = await withRecoveryLock(recoveryLockPath, async () => {
@@ -92,6 +105,19 @@ export async function acquireProjectWorkerLease(
       released = true;
     },
   };
+}
+
+export async function forceRecoverStaleProjectWorkerLease(
+  repositoryRoot: string,
+): Promise<boolean> {
+  const lease = await acquireProjectWorkerLease(repositoryRoot, {
+    forceRecoverStale: true,
+  });
+  try {
+    return lease.recoveredStaleLease;
+  } finally {
+    await lease.release();
+  }
 }
 
 async function writeExclusive(
@@ -157,6 +183,13 @@ function isProcessAlive(pid: number): boolean {
 function activeWorkerError(path: string, pid: number): Error {
   return new Error(
     `Visual Intent SDK worker is already running for this project (PID ${pid}). Lease: ${path}`,
+  );
+}
+
+function staleWorkerError(path: string, pid?: number): Error {
+  const owner = pid === undefined ? "an invalid owner" : `dead PID ${pid}`;
+  return new Error(
+    `Visual Intent found a stale SDK worker lease with ${owner}: ${path}. Automatic recovery is disabled because an orphaned Codex child may still be editing the repository. Verify that no Visual Intent or Codex worker remains, then retry with explicit force recovery.`,
   );
 }
 

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Visual Intent navigation-ready demo</title>
+    <style>
+      body {
+        margin: 0;
+        background: #eef2f7;
+        color: #172033;
+        font:
+          16px/1.5 Inter,
+          system-ui,
+          sans-serif;
+      }
+      main {
+        width: min(760px, calc(100% - 48px));
+        margin: 64px auto;
+        padding: 32px;
+        border: 1px solid #cbd5e1;
+        border-radius: 20px;
+        background: white;
+        box-shadow: 0 18px 45px rgb(15 23 42 / 10%);
+      }
+      code,
+      pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      output {
+        display: inline-flex;
+        min-width: 88px;
+        justify-content: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: #e2e8f0;
+        font-weight: 700;
+      }
+      output[data-status="ready"] {
+        background: #dcfce7;
+        color: #166534;
+      }
+      output[data-status="degraded"] {
+        background: #ffedd5;
+        color: #9a3412;
+      }
+      pre {
+        min-height: 170px;
+        overflow: auto;
+        padding: 16px;
+        border-radius: 12px;
+        background: #172033;
+        color: #e2e8f0;
+        font-size: 12px;
+      }
+    </style>
+    <!-- Vite HMR intentionally keeps a WebSocket open in development. -->
+    <script type="module" src="/@vite/client"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Контракт готовности Visual Intent</h1>
+      <p>
+        HMR WebSocket этой страницы остаётся открытым. Готовность определяется
+        маркером overlay API, а не состоянием <code>networkidle</code>.
+      </p>
+      <p>Состояние: <output id="status">ожидание</output></p>
+      <pre id="detail">Событие ещё не получено.</pre>
+    </main>
+    <script>
+      const status = document.querySelector("#status");
+      const detail = document.querySelector("#detail");
+
+      function renderMarker() {
+        const host = document.querySelector("#visual-intent-overlay-root");
+        const value = host?.getAttribute("data-visual-intent-bootstrap");
+        if (!value) return;
+        status.value = value;
+        status.dataset.status = value;
+      }
+
+      document.addEventListener("visual-intent:navigation-ready", (event) => {
+        window.__visualIntentNavigationReadyDetail = event.detail;
+        detail.textContent = JSON.stringify(event.detail, null, 2);
+        renderMarker();
+      });
+
+      new MutationObserver(renderMarker).observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+        attributeFilter: ["data-visual-intent-bootstrap"],
+      });
+      renderMarker();
+    </script>
+  </body>
+</html>

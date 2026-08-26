@@ -298,9 +298,10 @@ describe("SdkCodexRunner", () => {
     });
 
     const options = runStreamed.mock.calls[0]?.[1] as
-      | { outputSchema?: unknown }
+      | { outputSchema?: unknown; signal?: AbortSignal }
       | undefined;
     expect(options?.outputSchema).toBeDefined();
+    expect(options?.signal).toBeInstanceOf(AbortSignal);
     expect(JSON.stringify(options?.outputSchema)).not.toContain(
       '"uniqueItems"',
     );
@@ -485,9 +486,90 @@ describe("SdkCodexRunner", () => {
 
     expect(onThreadStarted).toHaveBeenCalledWith("thread-sdk");
   });
+
+  it("passes cancellation to the Codex child through AbortSignal", async () => {
+    let receivedSignal: AbortSignal | undefined;
+    const runStreamed = vi.fn(
+      async (_prompt: string, options?: { signal?: AbortSignal }) => {
+        receivedSignal = options?.signal;
+        return {
+          events: (async function* () {
+            if (!receivedSignal) throw new Error("Missing AbortSignal");
+            await new Promise<void>((_resolve, reject) => {
+              if (receivedSignal?.aborted) {
+                reject(new DOMException("Aborted", "AbortError"));
+                return;
+              }
+              receivedSignal?.addEventListener(
+                "abort",
+                () => reject(new DOMException("Aborted", "AbortError")),
+                { once: true },
+              );
+            });
+            yield { type: "turn.started" as const };
+          })(),
+        };
+      },
+    );
+    const thread = { id: "thread-sdk", runStreamed };
+    const codex = {
+      startThread: vi.fn(() => thread),
+      resumeThread: vi.fn(() => thread),
+    } as unknown as Codex;
+    const controller = new AbortController();
+
+    const running = new SdkCodexRunner(codex).run({
+      repositoryRoot: "/tmp/example",
+      prompt: "Do the work",
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(receivedSignal).toBeDefined());
+    controller.abort();
+
+    await expect(running).rejects.toMatchObject({ name: "AbortError" });
+    expect(receivedSignal?.aborted).toBe(true);
+  });
 });
 
 describe("CodexDispatcher", () => {
+  it("aborts the active SDK turn on close and never starts the next queued batch", async () => {
+    const { store, batch } = await createBatch("visual-intent-owned");
+    await store.create({
+      ...input,
+      surface: { ...input.surface, id: "surface-after-shutdown" },
+      intent: { ...input.intent, id: "intent-after-shutdown" },
+    });
+    const nextBatch = await store.dispatchReady();
+    if (!nextBatch) throw new Error("Expected a second Apply batch");
+    const run = vi.fn<CodexRunner["run"]>(
+      async ({ signal }) =>
+        new Promise<CodexRunOutput>((_resolve, reject) => {
+          if (signal?.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    const dispatcher = new CodexDispatcher({ store, runner: { run } });
+
+    dispatcher.enqueue(batch);
+    dispatcher.enqueue(nextBatch);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    await dispatcher.close();
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect((await store.getBatch(batch.id))?.result).toMatchObject({
+      failureCode: "worker_interrupted",
+      retryable: true,
+    });
+    expect((await store.getBatch(nextBatch.id))?.status).toBe("queued");
+  });
+
   it("keeps a host-attached Apply batch for the current Codex task without running the SDK", async () => {
     const { repositoryRoot, store, batch } = await createBatch("host-attached");
     const run = vi.fn<CodexRunner["run"]>();
@@ -903,6 +985,25 @@ describe("CodexDispatcher", () => {
       expect.objectContaining({
         retryable: true,
         failureCode: "codex_invalid_json_schema",
+      }),
+    );
+  });
+
+  it("preserves an interrupted SDK batch as an explicit retry", async () => {
+    const { store, batch } = await createBatch("visual-intent-owned");
+    const interrupted = new Error("The operation was aborted");
+    interrupted.name = "AbortError";
+    const run = vi.fn<CodexRunner["run"]>().mockRejectedValue(interrupted);
+    const dispatcher = new CodexDispatcher({ store, runner: { run } });
+
+    dispatcher.enqueue(batch);
+    await dispatcher.idle();
+
+    expect((await store.getBatch(batch.id))?.result).toEqual(
+      expect.objectContaining({
+        retryable: true,
+        failureCode: "worker_interrupted",
+        summary: expect.stringContaining("interrupted"),
       }),
     );
   });

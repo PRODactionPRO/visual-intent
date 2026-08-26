@@ -115,13 +115,14 @@ function compareTaskDisplayOrder(left: Task, right: Task): number {
 }
 
 function assignDisplayNumbers(tasks: Task[]): Task[] {
-  const roots = [...tasks]
+  const roots = tasks
+    .map((task, persistedIndex) => ({ task, persistedIndex }))
     .sort(
       (left, right) =>
-        left.createdAt.localeCompare(right.createdAt) ||
-        left.id.localeCompare(right.id),
+        left.task.createdAt.localeCompare(right.task.createdAt) ||
+        left.persistedIndex - right.persistedIndex,
     )
-    .reduce<string[]>((orderedRoots, task) => {
+    .reduce<string[]>((orderedRoots, { task }) => {
       const rootId = task.rootTaskId ?? task.id;
       if (!orderedRoots.includes(rootId)) orderedRoots.push(rootId);
       return orderedRoots;
@@ -1172,18 +1173,14 @@ export class FileTaskStore implements TaskStore {
         throw new BatchStateConflictError(id, existing.status, "claimed");
       }
       if (
-        existing.executorOwnership === "visual-intent-owned" &&
         document.batches.some(
-          (batch) =>
-            batch.id !== existing.id &&
-            batch.status === "in_progress" &&
-            batch.executorOwnership === "visual-intent-owned",
+          (batch) => batch.id !== existing.id && batch.status === "in_progress",
         )
       ) {
         throw new BatchStateConflictError(
           id,
           existing.status,
-          "claimed while another Visual Intent-owned batch is in progress",
+          "claimed while another Apply batch is in progress",
         );
       }
       const executorOwnership =

@@ -42,6 +42,12 @@ pnpm demo
 
 Откройте <http://127.0.0.1:7310>. Не открывайте порт `5173`: там работает исходное демонстрационное приложение без изменений. На порту `7310` работает proxy Visual Intent с overlay.
 
+Для проверки автоматизированной навигации откройте
+<http://127.0.0.1:7310/navigation-ready-demo.html>. Fixture оставляет HMR
+WebSocket открытым, но Visual Intent всё равно публикует собственный постоянный
+маркер `data-visual-intent-bootstrap`. Контракт и рекомендуемый
+`page.waitForFunction` описаны в [docs/NAVIGATION-READY.md](docs/NAVIGATION-READY.md).
+
 Попробуйте следующий сценарий:
 
 1. Нажмите **Select**, затем выберите зелёную кнопку «Start a conversation».
@@ -78,6 +84,39 @@ pnpm vip -- start \
 Откройте <http://127.0.0.1:7310>. Proxy всегда определяет путь к хранилищу из `--repo` и записывает задачи в `/absolute/path/to/your-project/.visual-intent/tasks.json`; обратная связь этого проекта никогда не сохраняется в репозитории самого продукта Visual Intent. При первом запуске рядом создаётся `.visual-intent/context.md`: туда можно записать устойчивую цель продукта, архитектурные ограничения, Figma-ссылку и команды проверки. Apply сохраняет снимок этого файла, поэтому уже отправленный пакет не меняет смысл при последующем редактировании briefing. Проект продолжает работать на исходном порту, а proxy перенаправляет запросы и WebSocket горячей перезагрузки и добавляет overlay в HTML-ответы.
 
 MVP намеренно принимает только loopback-адреса и слушает только loopback-интерфейс. Если dev server возвращает сжатый HTML, несмотря на запрос proxy на несжатый ответ, страница будет проксирована, но overlay в неё не добавится.
+
+### Постоянный proxy на macOS и диагностика
+
+Для ежедневной работы proxy можно установить как пользовательский LaunchAgent,
+который не завершается вместе с временным терминалом:
+
+```bash
+pnpm vip -- service install \
+  --target http://127.0.0.1:3000 \
+  --port 7310 \
+  --repo /absolute/path/to/your-project \
+  --project your-project \
+  --executor isolated-worker
+```
+
+Visual Intent не запускает dev server целевого проекта — он должен работать
+отдельно. Состояние сервиса и всего локального контура проверяется без изменений
+файлов:
+
+```bash
+pnpm vip -- service status --repo /absolute/path/to/your-project
+pnpm vip -- doctor --repo /absolute/path/to/your-project
+```
+
+`service install`, `service start` и `service restart` считаются успешными
+только после двух проверок: LaunchAgent действительно имеет живой PID, а
+сверенный по identity health-ответ подтверждает ожидаемые репозиторий, URL proxy, сессию и
+конкретный экземпляр daemon. Один канонический репозиторий может иметь только
+один процесс Visual Intent; foreground CLI и LaunchAgent не смогут незаметно
+запуститься параллельно.
+
+Команды управления, защита активного Apply, логи и ignore-рецепты подробно
+описаны в [руководстве по эксплуатации](docs/OPERATIONS.md).
 
 ## Локальное Chrome Extension для внешних референсов
 
@@ -133,7 +172,7 @@ pnpm vip -- start \
   --executor isolated-worker
 ```
 
-Первый Apply создаёт отдельную SDK-задачу, которой владеет Visual Intent, а последующие пакеты и перезапуски proxy возобновляют только её. ID сохраняется сразу после события создания SDK thread, даже если первый turn завершился ошибкой. Persisted `queued` пакеты подхватываются после перезапуска. Проектная lease `.visual-intent/worker-lease.json` не позволяет двум локальным daemon одновременно запускать один worker: живой PID блокирует второй процесс, а stale или повреждённая lease безопасно заменяется. Обычный `Ctrl+C` ждёт завершения активного SDK-turn и только потом освобождает lease. После аварийного обрыва собственного worker незавершённый пакет помечается как явная retryable-ошибка `worker_interrupted`, частичный diff сохраняется, автоматического отката файлов нет. Жёсткий `SIGKILL` не даёт Node.js возможности подтвердить остановку дочернего Codex-процесса, поэтому перед явным Retry такого пакета нужно убедиться, что старый процесс завершён; это известное ограничение локального MVP. При необходимости можно явно передать ранее созданный Visual Intent worker через `--worker-thread <id>`; ID подключённой задачи Desktop сюда передавать нельзя. Явный `--executor disconnected` отключает сохранённый маршрут, а режим по умолчанию `preserve` не меняет ранее выбранного исполнителя.
+Первый Apply создаёт отдельную SDK-задачу, которой владеет Visual Intent, а последующие пакеты и перезапуски proxy возобновляют только её. ID сохраняется сразу после события создания SDK thread, даже если первый turn завершился ошибкой. Persisted `queued` пакеты подхватываются после перезапуска. Проектная lease `.visual-intent/worker-lease.json` не позволяет двум локальным daemon одновременно запускать один worker: живой PID блокирует второй процесс. Stale или повреждённая lease намеренно **не удаляется автоматически**, потому что после `SIGKILL` дочерний Codex-процесс теоретически ещё может редактировать репозиторий. Обычные `Ctrl+C` и `SIGTERM` отменяют активный SDK-turn, сохраняют пакет как исправимую ошибку `worker_interrupted`, оставляют частичный diff для проверки и только затем освобождают lease; автоматического отката файлов нет. После жёсткого обрыва нужно проверить процессы Codex и рабочее дерево, а затем явно разрешить recovery через `--force-recover-stale-worker`. При активном Apply для service-команды дополнительно требуется отдельный `--force`: эти флаги подтверждают разные риски. При необходимости можно явно передать ранее созданный Visual Intent worker через `--worker-thread <id>`; ID подключённой задачи Desktop сюда передавать нельзя. Явный `--executor disconnected` отключает сохранённый маршрут, а режим по умолчанию `preserve` не меняет ранее выбранного исполнителя.
 
 Автоматическое восстановление относится только к пакету собственного SDK worker, жизненным циклом которого управляет daemon. Прерванный `in_progress` claim внешней host-attached задачи сейчас автоматически не переоткрывается: перед ручным решением нужно проверить её реальное состояние и рабочее дерево проекта.
 
@@ -279,6 +318,7 @@ Claim возвращает серверный receipt `batch.claim`: `id` (`clai
 
 ```text
 GET   /_visual-intent/api/health
+GET   /_visual-intent/api/diagnostics
 GET   /_visual-intent/api/session
 POST  /_visual-intent/api/session/attach
 GET   /_visual-intent/api/settings
@@ -355,9 +395,11 @@ docs/
   INTERFACE-BRIEF.md
   FUTURE-MEDIA-AND-USAGE.md
   CHROME-EXTENSION.md
+  NAVIGATION-READY.md
+  OPERATIONS.md
 ```
 
-Подробности: [продукт](docs/PRODUCT.md), [архитектура](docs/ARCHITECTURE.md), [протокол](docs/PROTOCOL.md), [платформенный roadmap](docs/PLATFORM-ROADMAP.md), [интерфейсный brief](docs/INTERFACE-BRIEF.md) и дискуссионный документ о [будущей работе с медиа, хранением и стоимостью](docs/FUTURE-MEDIA-AND-USAGE.md).
+Подробности: [продукт](docs/PRODUCT.md), [архитектура](docs/ARCHITECTURE.md), [протокол](docs/PROTOCOL.md), [платформенный roadmap](docs/PLATFORM-ROADMAP.md), [интерфейсный brief](docs/INTERFACE-BRIEF.md), [эксплуатация](docs/OPERATIONS.md), [готовность навигации](docs/NAVIGATION-READY.md) и дискуссионный документ о [будущей работе с медиа, хранением и стоимостью](docs/FUTURE-MEDIA-AND-USAGE.md).
 
 ## Лицензия
 

@@ -368,7 +368,15 @@ describe("FileTaskStore", () => {
     const legacy = JSON.parse(await readFile(store.filePath, "utf8")) as {
       tasks: Array<Record<string, unknown>>;
     };
-    legacy.tasks.forEach((task) => delete task.displayNumber);
+    const legacyTimestamp = "2026-08-26T00:00:00.000Z";
+    const legacyIds = ["legacy-z-first", "legacy-a-second"];
+    legacy.tasks.forEach((task, index) => {
+      delete task.displayNumber;
+      task.id = legacyIds[index];
+      task.rootTaskId = legacyIds[index];
+      task.iterationId = legacyIds[index];
+      task.createdAt = legacyTimestamp;
+    });
     await writeFile(
       store.filePath,
       `${JSON.stringify(legacy, null, 2)}\n`,
@@ -377,12 +385,12 @@ describe("FileTaskStore", () => {
 
     const reopened = new FileTaskStore(store.filePath);
     const migrated = await reopened.list();
-    expect(migrated.find((task) => task.id === first.id)?.displayNumber).toBe(
-      1,
-    );
-    expect(migrated.find((task) => task.id === second.id)?.displayNumber).toBe(
-      2,
-    );
+    expect(
+      migrated.find((task) => task.id === legacyIds[0])?.displayNumber,
+    ).toBe(1);
+    expect(
+      migrated.find((task) => task.id === legacyIds[1])?.displayNumber,
+    ).toBe(2);
     const third = await reopened.create({
       ...input,
       intent: { ...input.intent, id: "intent-3", instruction: "Move image" },
@@ -774,7 +782,7 @@ describe("FileTaskStore", () => {
     ).toEqual(batch?.projectContext);
   });
 
-  it("allows only one Visual Intent-owned batch to be in progress", async () => {
+  it("allows only one Apply batch to be in progress", async () => {
     const directory = await mkdtemp(join(tmpdir(), "visual-intent-worker-"));
     temporaryDirectories.push(directory);
     const repository = { root: "/workspace/worker", name: "worker" };
@@ -806,7 +814,7 @@ describe("FileTaskStore", () => {
     if (!secondBatch) throw new Error("Expected second batch");
 
     await expect(claimStoredBatch(store, secondBatch.id)).rejects.toThrow(
-      "another Visual Intent-owned batch is in progress",
+      "another Apply batch is in progress",
     );
     expect((await store.getBatch(firstBatch.id))?.status).toBe("in_progress");
     expect((await store.getBatch(secondBatch.id))?.status).toBe("queued");
@@ -920,6 +928,9 @@ describe("FileTaskStore", () => {
       executorOwnership: "host-attached",
       executorThreadId: "thread-host-b",
     });
+    await expect(claimStoredBatch(store, pendingBatch.id)).rejects.toThrow(
+      "another Apply batch is in progress",
+    );
   });
 
   it.each([

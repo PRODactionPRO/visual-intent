@@ -19,7 +19,7 @@ export function parseExecutorMode(
       `--host ${quoteShellArgument(context.host)}`,
       `--port ${context.port}`,
     ].join(" ");
-    const daemonUrl = `http://${context.host}:${context.port}`;
+    const daemonUrl = formatLoopbackOrigin(context.host, context.port);
     throw new Error(
       [
         "--executor codex was replaced by explicit ownership modes.",
@@ -44,3 +44,4 @@ export function parseExecutorMode(
 function quoteShellArgument(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
+import { formatLoopbackOrigin } from "./loopback-origin.js";

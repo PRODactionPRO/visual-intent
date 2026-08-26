@@ -36,6 +36,12 @@ describe("executor mode", () => {
     ).toThrow("--repo '/workspace/Product With Spaces'");
   });
 
+  it("prints a valid daemon URL for IPv6 loopback", () => {
+    expect(() =>
+      parseExecutorMode("codex", { ...context, host: "::1" }),
+    ).toThrow("visual-intent attach --daemon 'http://[::1]:7310'");
+  });
+
   it("rejects an unknown executor", () => {
     expect(() => parseExecutorMode("other", context)).toThrow(
       "Executor must be preserve, disconnected or isolated-worker",

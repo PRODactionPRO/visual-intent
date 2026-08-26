@@ -75,7 +75,7 @@ Service worker запускает независимый selector в каждо�
 ```bash
 pnpm install
 pnpm build
-pnpm vip -- bridge
+pnpm vip bridge
 ```
 
 Затем в `chrome://extensions` нужно включить режим разработчика и загрузить папку:

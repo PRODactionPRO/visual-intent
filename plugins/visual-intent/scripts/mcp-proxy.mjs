@@ -1,8 +1,8 @@
-import { readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { realpath } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
 import { resolveCodexThreadId } from "./session-context.mjs";
+import { loadAndPreflightConnection } from "./connection-preflight.mjs";
 
 let connection;
 const batchClaims = new Map();
@@ -143,6 +143,7 @@ const tools = [
         expectedAttempt: { type: "number" },
         taskResults: {
           type: "array",
+          minItems: 1,
           items: {
             type: "object",
             properties: {
@@ -203,7 +204,14 @@ const tools = [
           },
         },
       },
-      required: ["id", "status", "summary", "changedFiles", "notes"],
+      required: [
+        "id",
+        "status",
+        "summary",
+        "changedFiles",
+        "notes",
+        "taskResults",
+      ],
       additionalProperties: false,
     },
   },
@@ -413,19 +421,10 @@ async function callTool(name, input, requestMeta) {
 }
 
 async function attachProject(input, requestMeta) {
+  connection = undefined;
+  batchClaims.clear();
   const repositoryRoot = await realpath(input.repositoryRoot);
-  const candidate = JSON.parse(
-    await readFile(
-      join(repositoryRoot, ".visual-intent", "connection.json"),
-      "utf8",
-    ),
-  );
-  if (candidate.repositoryRoot !== repositoryRoot) {
-    throw new Error(
-      `Visual Intent connection belongs to ${candidate.repositoryRoot}, not ${repositoryRoot}`,
-    );
-  }
-  connection = candidate;
+  const candidate = await loadAndPreflightConnection(repositoryRoot);
   const threadId = resolveCodexThreadId({
     explicit: input.threadId,
     requestMeta,
@@ -435,7 +434,7 @@ async function attachProject(input, requestMeta) {
       "Codex task id is unavailable in the MCP context; pass threadId explicitly",
     );
   }
-  const attached = await api("/session/attach", {
+  const attached = await apiWithConnection(candidate, "/session/attach", {
     method: "POST",
     body: JSON.stringify({
       repositoryRoot,
@@ -445,7 +444,6 @@ async function attachProject(input, requestMeta) {
     }),
   });
   connection = { ...candidate, controllerThreadId: threadId };
-  batchClaims.clear();
   return attached;
 }
 
@@ -453,17 +451,21 @@ async function api(path, init = {}) {
   if (!connection) {
     throw new Error("Call visual_intent_attach_project first");
   }
+  return apiWithConnection(connection, path, init);
+}
+
+async function apiWithConnection(activeConnection, path, init = {}) {
   const headers = new Headers(init.headers);
-  headers.set("x-visual-intent-token", connection.apiToken);
-  if (connection.controllerThreadId) {
+  headers.set("x-visual-intent-token", activeConnection.apiToken);
+  if (activeConnection.controllerThreadId) {
     headers.set(
       "x-visual-intent-controller-thread",
-      connection.controllerThreadId,
+      activeConnection.controllerThreadId,
     );
   }
   if (init.body) headers.set("content-type", "application/json");
   const response = await fetch(
-    `${connection.daemonUrl.replace(/\/$/, "")}/_visual-intent/api${path}`,
+    `${activeConnection.daemonUrl.replace(/\/$/, "")}/_visual-intent/api${path}`,
     { ...init, headers, signal: AbortSignal.timeout(5000) },
   );
   const body = await response.json();

@@ -107,6 +107,7 @@ export async function handleApiRequest(
   onTaskChanged: (task: unknown) => void,
   options: {
     apiToken?: string;
+    daemonInstanceId?: string;
     onBatchReady?: (batchId: string) => void;
     attachmentStore?: ProjectAttachmentStore;
   } = {},
@@ -135,6 +136,10 @@ export async function handleApiRequest(
         ok: true,
         service: "visual-intent",
         mode: "local",
+        protocolVersion: "0.1",
+        ...(options.daemonInstanceId
+          ? { daemonInstanceId: options.daemonInstanceId }
+          : {}),
         session: await store.getSession(),
       });
       return true;

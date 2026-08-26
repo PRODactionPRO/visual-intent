@@ -19,7 +19,7 @@ import {
 } from "@visual-intent/file-store";
 import { runMcpServer } from "@visual-intent/mcp-server";
 
-import { startDaemon } from "./daemon.js";
+import { startDaemon, validateTarget } from "./daemon.js";
 import { CodexDispatcher } from "./dispatcher.js";
 import { projectTaskStorePath } from "./project-storage.js";
 import { ProjectAttachmentStore } from "./attachment-store.js";
@@ -42,6 +42,7 @@ import {
 } from "./project-context.js";
 import { resetProjectHistory } from "./reset-history.js";
 import { acquireProjectWorkerLease } from "./worker-lease.js";
+import { parseExecutorMode } from "./executor-mode.js";
 
 const execFileAsync = promisify(execFile);
 const program = new Command();
@@ -102,18 +103,17 @@ program
         throw new Error("MVP only binds to a local loopback host");
       }
 
+      const target = validateTarget(options.target).origin;
+      const executor = parseExecutorMode(options.executor, {
+        target,
+        repositoryRoot: resolve(options.repo),
+        host: options.host,
+        port,
+      });
+
       const repositoryRoot = await realpath(resolve(options.repo));
       const storePath = projectTaskStorePath(repositoryRoot);
-      if (
-        options.executor !== "preserve" &&
-        options.executor !== "disconnected" &&
-        options.executor !== "isolated-worker"
-      ) {
-        throw new Error(
-          "Executor must be preserve, disconnected or isolated-worker",
-        );
-      }
-      if (options.workerThread && options.executor !== "isolated-worker") {
+      if (options.workerThread && executor !== "isolated-worker") {
         throw new Error("--worker-thread requires --executor isolated-worker");
       }
       const repository = {
@@ -181,8 +181,7 @@ program
         displayName,
       );
       const usesAutonomousWorker =
-        options.executor === "isolated-worker" ||
-        activeExistingWorker !== undefined;
+        executor === "isolated-worker" || activeExistingWorker !== undefined;
       const workerLease = usesAutonomousWorker
         ? await acquireProjectWorkerLease(repositoryRoot)
         : undefined;
@@ -203,9 +202,9 @@ program
           projectKey,
           displayName,
           repository,
-          targetUrl: options.target,
+          targetUrl: target,
           proxyUrl: `http://${options.host}:${port}`,
-          ...(options.executor === "isolated-worker"
+          ...(executor === "isolated-worker"
             ? {
                 sdkWorker: {
                   kind: "codex" as const,
@@ -245,7 +244,7 @@ program
                     : {}),
                 },
               }
-            : options.executor === "disconnected"
+            : executor === "disconnected"
               ? {
                   executor: {
                     kind: "disconnected" as const,
@@ -258,7 +257,7 @@ program
         daemon = await startDaemon({
           host: options.host,
           port,
-          target: options.target,
+          target,
           store,
           attachmentStore: new ProjectAttachmentStore(repositoryRoot),
           apiToken,
@@ -286,6 +285,8 @@ program
               apiToken,
               projectKey,
               repositoryRoot,
+              sessionId: session.id,
+              daemonInstanceId: daemon.instanceId,
               taskStorePath: storePath,
               projectContextPath: contextPath,
             },
@@ -299,6 +300,7 @@ program
           session,
           daemonUrl,
           apiToken,
+          daemon.instanceId,
         );
 
         console.log(`Visual Intent: ${daemonUrl}`);

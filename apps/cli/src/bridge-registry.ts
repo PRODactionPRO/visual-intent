@@ -23,6 +23,7 @@ export interface BridgeConfig {
 
 export interface BridgeSessionRegistration {
   version: 1;
+  daemonInstanceId: string;
   sessionId: string;
   daemonUrl: string;
   apiToken: string;
@@ -76,6 +77,7 @@ export async function registerBridgeSession(
   session: ProjectSession,
   daemonUrl: string,
   apiToken: string,
+  daemonInstanceId: string,
   directory = bridgeDataDirectory(),
 ): Promise<BridgeSessionRegistration> {
   assertLoopbackUrl(daemonUrl);
@@ -83,6 +85,7 @@ export async function registerBridgeSession(
   await mkdir(sessionsDirectory, { recursive: true, mode: 0o700 });
   const registration: BridgeSessionRegistration = {
     version: 1,
+    daemonInstanceId,
     sessionId: session.id,
     daemonUrl: daemonUrl.replace(/\/$/u, ""),
     apiToken,
@@ -115,6 +118,7 @@ export async function unregisterBridgeSession(
   try {
     const current = parseRegistration(await readFile(path, "utf8"));
     if (
+      current.daemonInstanceId === registration.daemonInstanceId &&
       current.daemonUrl === registration.daemonUrl &&
       current.apiToken === registration.apiToken
     ) {
@@ -158,9 +162,16 @@ export function assertLoopbackUrl(rawUrl: string): URL {
   const url = new URL(rawUrl);
   if (
     url.protocol !== "http:" ||
-    !new Set(["127.0.0.1", "localhost", "::1", "[::1]"]).has(url.hostname)
+    !new Set(["127.0.0.1", "localhost", "::1", "[::1]"]).has(url.hostname) ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    (url.pathname !== "" && url.pathname !== "/") ||
+    url.search.length > 0 ||
+    url.hash.length > 0
   ) {
-    throw new Error("Visual Intent Bridge only accepts loopback daemon URLs");
+    throw new Error(
+      "Visual Intent Bridge only accepts plain HTTP loopback origins",
+    );
   }
   return url;
 }
@@ -174,6 +185,8 @@ function parseRegistration(serialized: string): BridgeSessionRegistration {
   const value = JSON.parse(serialized) as Partial<BridgeSessionRegistration>;
   if (
     value.version !== 1 ||
+    typeof value.daemonInstanceId !== "string" ||
+    value.daemonInstanceId.length === 0 ||
     typeof value.sessionId !== "string" ||
     typeof value.daemonUrl !== "string" ||
     typeof value.apiToken !== "string" ||

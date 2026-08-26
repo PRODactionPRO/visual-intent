@@ -105,6 +105,20 @@ describe("local daemon", () => {
     expect(() => validateTarget("https://example.com")).toThrow("localhost");
   });
 
+  it.each([
+    "http://127.0.0.1:3000/admin",
+    "http://127.0.0.1:3000/?workspace=demo",
+    "http://127.0.0.1:3000/#feedback",
+  ])("rejects a target that is not an origin: %s", (target) => {
+    expect(() => validateTarget(target)).toThrow("origin only");
+  });
+
+  it("accepts and normalizes a localhost origin", () => {
+    expect(validateTarget("http://localhost:3000").origin).toBe(
+      "http://localhost:3000",
+    );
+  });
+
   it("proxies HTML and exposes a health endpoint", async () => {
     const targetServer = createServer((_request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -141,6 +155,8 @@ describe("local daemon", () => {
       ok: true,
       service: "visual-intent",
       mode: "local",
+      protocolVersion: "0.1",
+      daemonInstanceId: daemon.instanceId,
     });
   });
 
